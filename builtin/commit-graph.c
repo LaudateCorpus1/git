@@ -50,36 +50,12 @@ static struct option common_opts[] = {
 	OPT_STRING(0, "object-dir", &opts.obj_dir,
 		   N_("dir"),
 		   N_("the object directory to store the graph")),
-	OPT_BOOL(0, "progress", &opts.progress,
-		 N_("force progress reporting")),
 	OPT_END()
 };
 
 static struct option *add_common_options(struct option *to)
 {
 	return parse_options_concat(common_opts, to);
-}
-
-static struct object_directory *find_odb(struct repository *r,
-					 const char *obj_dir)
-{
-	struct object_directory *odb;
-	char *obj_dir_real = real_pathdup(obj_dir, 1);
-	struct strbuf odb_path_real = STRBUF_INIT;
-
-	prepare_alt_odb(r);
-	for (odb = r->objects->odb; odb; odb = odb->next) {
-		strbuf_realpath(&odb_path_real, odb->path, 1);
-		if (!strcmp(obj_dir_real, odb_path_real.buf))
-			break;
-	}
-
-	free(obj_dir_real);
-	strbuf_release(&odb_path_real);
-
-	if (!odb)
-		die(_("could not find object directory matching %s"), obj_dir);
-	return odb;
 }
 
 static int graph_verify(int argc, const char **argv)
@@ -95,6 +71,8 @@ static int graph_verify(int argc, const char **argv)
 	static struct option builtin_commit_graph_verify_options[] = {
 		OPT_BOOL(0, "shallow", &opts.shallow,
 			 N_("if the commit-graph is split, only verify the tip file")),
+		OPT_BOOL(0, "progress", &opts.progress,
+			 N_("force progress reporting")),
 		OPT_END(),
 	};
 	struct option *options = add_common_options(builtin_commit_graph_verify_options);
@@ -194,8 +172,8 @@ static int write_option_max_new_filters(const struct option *opt,
 		const char *s;
 		*to = strtol(arg, (char **)&s, 10);
 		if (*s)
-			return error(_("%s expects a numerical value"),
-				     optname(opt, opt->flags));
+			return error(_("option `%s' expects a numerical value"),
+				     "max-new-filters");
 	}
 	return 0;
 }
@@ -246,6 +224,8 @@ static int graph_write(int argc, const char **argv)
 		OPT_CALLBACK_F(0, "max-new-filters", &write_opts.max_new_filters,
 			NULL, N_("maximum number of changed-path Bloom filters to compute"),
 			0, write_option_max_new_filters),
+		OPT_BOOL(0, "progress", &opts.progress,
+			 N_("force progress reporting")),
 		OPT_END(),
 	};
 	struct option *options = add_common_options(builtin_commit_graph_write_options);
@@ -283,7 +263,6 @@ static int graph_write(int argc, const char **argv)
 	    git_env_bool(GIT_TEST_COMMIT_GRAPH_CHANGED_PATHS, 0))
 		flags |= COMMIT_GRAPH_WRITE_BLOOM_FILTERS;
 
-	read_replace_refs = 0;
 	odb = find_odb(the_repository, opts.obj_dir);
 
 	if (opts.reachable) {
@@ -338,6 +317,7 @@ int cmd_commit_graph(int argc, const char **argv, const char *prefix)
 	if (!argc)
 		goto usage;
 
+	read_replace_refs = 0;
 	save_commit_buffer = 0;
 
 	if (!strcmp(argv[0], "verify"))

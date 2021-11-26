@@ -41,6 +41,12 @@ static void ensure_config_read(void)
 }
 
 /*
+ * If we see this many or more "ref-prefix" lines from the client, we consider
+ * it "too many" and will avoid using the prefix feature entirely.
+ */
+#define TOO_MANY_PREFIXES 65536
+
+/*
  * Check if one of the prefixes is a prefix of the ref.
  * If no prefixes were provided, all refs match.
  */
@@ -107,7 +113,7 @@ static int send_ref(const char *refname, const struct object_id *oid,
 	}
 
 	strbuf_addch(&data->buf, '\n');
-	packet_write(1, data->buf.buf, data->buf.len);
+	packet_fwrite(stdout, data->buf.buf, data->buf.len);
 
 	return 0;
 }
@@ -139,8 +145,7 @@ static int ls_refs_config(const char *var, const char *value, void *data)
 	return parse_hide_refs_config(var, value, "uploadpack");
 }
 
-int ls_refs(struct repository *r, struct strvec *keys,
-	    struct packet_reader *request)
+int ls_refs(struct repository *r, struct packet_reader *request)
 {
 	struct ls_refs_data data;
 
@@ -159,21 +164,33 @@ int ls_refs(struct repository *r, struct strvec *keys,
 			data.peel = 1;
 		else if (!strcmp("symrefs", arg))
 			data.symrefs = 1;
-		else if (skip_prefix(arg, "ref-prefix ", &out))
-			strvec_push(&data.prefixes, out);
+		else if (skip_prefix(arg, "ref-prefix ", &out)) {
+			if (data.prefixes.nr < TOO_MANY_PREFIXES)
+				strvec_push(&data.prefixes, out);
+		}
 		else if (!strcmp("unborn", arg))
 			data.unborn = allow_unborn;
+		else
+			die(_("unexpected line: '%s'"), arg);
 	}
 
 	if (request->status != PACKET_READ_FLUSH)
 		die(_("expected flush after ls-refs arguments"));
 
+	/*
+	 * If we saw too many prefixes, we must avoid using them at all; as
+	 * soon as we have any prefix, they are meant to form a comprehensive
+	 * list.
+	 */
+	if (data.prefixes.nr >= TOO_MANY_PREFIXES)
+		strvec_clear(&data.prefixes);
+
 	send_possibly_unborn_head(&data);
 	if (!data.prefixes.nr)
 		strvec_push(&data.prefixes, "");
 	for_each_fullref_in_prefixes(get_git_namespace(), data.prefixes.v,
-				     send_ref, &data, 0);
-	packet_flush(1);
+				     send_ref, &data);
+	packet_fflush(stdout);
 	strvec_clear(&data.prefixes);
 	strbuf_release(&data.buf);
 	return 0;
