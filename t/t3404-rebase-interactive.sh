@@ -25,8 +25,6 @@ Initial setup:
  where A, B, D and G all touch file1, and one, two, three, four all
  touch file "conflict".
 '
-GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
-export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 . ./test-lib.sh
 
@@ -621,9 +619,7 @@ test_expect_success 'rebase a detached HEAD' '
 '
 
 test_expect_success 'rebase a commit violating pre-commit' '
-
-	mkdir -p .git/hooks &&
-	write_script .git/hooks/pre-commit <<-\EOF &&
+	test_hook pre-commit <<-\EOF &&
 	test -z "$(git diff --cached --check)"
 	EOF
 	echo "monde! " >> file1 &&
@@ -638,8 +634,6 @@ test_expect_success 'rebase a commit violating pre-commit' '
 '
 
 test_expect_success 'rebase with a file named HEAD in worktree' '
-
-	rm -fr .git/hooks &&
 	git reset --hard &&
 	git checkout -b branch3 A &&
 
@@ -826,7 +820,7 @@ test_expect_success 'always cherry-pick with --no-ff' '
 	do
 		test ! $(git rev-parse HEAD~$p) = $(git rev-parse original-no-ff-branch~$p) &&
 		git diff HEAD~$p original-no-ff-branch~$p > out &&
-		test_must_be_empty out
+		test_must_be_empty out || return 1
 	done &&
 	test_cmp_rev HEAD~3 original-no-ff-branch~3 &&
 	git diff HEAD~3 original-no-ff-branch~3 > out &&
@@ -1341,7 +1335,7 @@ test_expect_success 'rebase --continue removes CHERRY_PICK_HEAD' '
 		test_seq 5 | sed "s/$double/&&/" >seq &&
 		git add seq &&
 		test_tick &&
-		git commit -m seq-$double
+		git commit -m seq-$double || return 1
 	done &&
 	git tag seq-onto &&
 	git reset --hard HEAD~2 &&
@@ -1690,10 +1684,8 @@ test_expect_success 'valid author header when author contains single quote' '
 '
 
 test_expect_success 'post-commit hook is called' '
-	test_when_finished "rm -f .git/hooks/post-commit" &&
 	>actual &&
-	mkdir -p .git/hooks &&
-	write_script .git/hooks/post-commit <<-\EOS &&
+	test_hook post-commit <<-\EOS &&
 	git rev-parse HEAD >>actual
 	EOS
 	(

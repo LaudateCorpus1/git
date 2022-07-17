@@ -55,12 +55,15 @@ fi
 ancestor() {
 	# We do some math with the expected ancestor length.
 	expected=$3
-	if test -n "$rootoff" && test "x$expected" != x-1; then
-		expected=$(($expected-$rootslash))
-		test $expected -lt 0 ||
-		expected=$(($expected+$rootoff))
-	fi
-	test_expect_success "longest ancestor: $1 $2 => $expected" \
+	case "$rootoff,$expected,$2" in
+	*,*,//*) ;; # leave UNC paths alone
+	[0-9]*,[0-9]*,/*)
+		# On Windows, expect MSYS2 pseudo root translation for
+		# Unix-style absolute paths
+		expected=$(($expected-$rootslash+$rootoff))
+		;;
+	esac
+	test_expect_success $4 "longest ancestor: $1 $2 => $expected" \
 	"actual=\$(test-tool path-utils longest_ancestor_length '$1' '$2') &&
 	 test \"\$actual\" = '$expected'"
 }
@@ -156,6 +159,11 @@ ancestor /foo/bar /foo 4
 ancestor /foo/bar /foo:/bar 4
 ancestor /foo/bar /bar -1
 
+# Windows-specific: DOS drives, network shares
+ancestor C:/Users/me C:/ 2 MINGW
+ancestor D:/Users/me C:/ -1 MINGW
+ancestor //server/share/my-directory //server/share/ 14 MINGW
+
 test_expect_success 'strip_path_suffix' '
 	test c:/msysgit = $(test-tool path-utils strip_path_suffix \
 		c:/msysgit/libexec//git-core libexec/git-core)
@@ -216,7 +224,7 @@ test_expect_success SYMLINKS 'real path works on symlinks' '
 	mkdir second &&
 	ln -s ../first second/other &&
 	mkdir third &&
-	dir="$(cd .git; pwd -P)" &&
+	dir="$(cd .git && pwd -P)" &&
 	dir2=third/../second/other/.git &&
 	test "$dir" = "$(test-tool path-utils real_path $dir2)" &&
 	file="$dir"/index &&
@@ -224,7 +232,7 @@ test_expect_success SYMLINKS 'real path works on symlinks' '
 	basename=blub &&
 	test "$dir/$basename" = "$(cd .git && test-tool path-utils real_path "$basename")" &&
 	ln -s ../first/file .git/syml &&
-	sym="$(cd first; pwd -P)"/file &&
+	sym="$(cd first && pwd -P)"/file &&
 	test "$sym" = "$(test-tool path-utils real_path "$dir2/syml")"
 '
 
@@ -534,7 +542,7 @@ test_lazy_prereq CAN_EXEC_IN_PWD '
 	./git rev-parse
 '
 
-test_expect_success RUNTIME_PREFIX,CAN_EXEC_IN_PWD 'RUNTIME_PREFIX works' '
+test_expect_success !VALGRIND,RUNTIME_PREFIX,CAN_EXEC_IN_PWD 'RUNTIME_PREFIX works' '
 	mkdir -p pretend/bin pretend/libexec/git-core &&
 	echo "echo HERE" | write_script pretend/libexec/git-core/git-here &&
 	cp "$GIT_EXEC_PATH"/git$X pretend/bin/ &&
@@ -542,7 +550,7 @@ test_expect_success RUNTIME_PREFIX,CAN_EXEC_IN_PWD 'RUNTIME_PREFIX works' '
 	echo HERE >expect &&
 	test_cmp expect actual'
 
-test_expect_success RUNTIME_PREFIX,CAN_EXEC_IN_PWD '%(prefix)/ works' '
+test_expect_success !VALGRIND,RUNTIME_PREFIX,CAN_EXEC_IN_PWD '%(prefix)/ works' '
 	mkdir -p pretend/bin &&
 	cp "$GIT_EXEC_PATH"/git$X pretend/bin/ &&
 	git config yes.path "%(prefix)/yes" &&
