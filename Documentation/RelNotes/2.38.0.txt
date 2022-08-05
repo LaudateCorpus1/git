@@ -27,6 +27,24 @@ UI, Workflows & Features
    what locale they are in by sending Accept-Language HTTP header, but
    this was done only for some requests but not others.
 
+ * Introduce a discovery.barerepository configuration variable that
+   allows users to forbid discovery of bare repositories.
+
+ * Various messages that come from the pack-bitmap codepaths have been
+   tweaked.
+
+ * "git rebase -i" learns to update branches whose tip appear in the
+   rebased range with "--update-refs" option.
+
+ * "git ls-files" learns the "--format" option to tweak its output.
+
+ * "git cat-file" learned an option to use the mailmap when showing
+   commit and tag objects.
+
+ * When "git merge" finds that it cannot perform a merge, it should
+   restore the working tree to the state before the command was
+   initiated, but in some corner cases it didn't.
+
 
 Performance, Internal Implementation, Development Support etc.
 
@@ -72,47 +90,49 @@ Performance, Internal Implementation, Development Support etc.
  * A coccinelle rule (in contrib/) to encourage use of COPY_ARRAY
    macro has been improved.
 
+ * API tweak to make it easier to run fuzz testing on commit-graph parser.
+
+ * Omit fsync-related trace2 entries when their values are all zero.
+
+ * The codepath to write multi-pack index has been taught to release a
+   large chunk of memory that holds an array of objects in the packs,
+   as soon as it is done with the array, to reduce memory consumption.
+
+ * Add a level of redirection to array allocation API in xdiff part,
+   to make it easier to share with the libgit2 project.
+
 
 Fixes since v2.37
 -----------------
 
  * Rewrite of "git add -i" in C that appeared in Git 2.25 didn't
    correctly record a removed file to the index, which was fixed.
-   (merge 4788e8b256 js/add-i-delete later to maint).
 
  * Certain diff options are currently ignored when combined-diff is
    shown; mark them as incompatible with the feature.
-   (merge cfb19ae05f rs/combine-diff-with-incompatible-options later to maint).
 
  * Adjust technical/bitmap-format to be formatted by AsciiDoc, and
    add some missing information to the documentation.
-   (merge ac7667bd44 ac/bitmap-format-doc later to maint).
 
  * Fixes for tests when the source directory has unusual characters in
    its path, e.g. whitespaces, double-quotes, etc.
-   (merge eb1cd60290 ab/test-quoting-fix later to maint).
 
  * "git mktree --missing" lazily fetched objects that are missing from
    the local object store, which was totally unnecessary for the purpose
    of creating the tree object(s) from its input.
-   (merge 817b0f6027 ro/mktree-allow-missing-fix later to maint).
 
  * Give _() markings to fatal/warning/usage: labels that are shown in
    front of these messages.
-   (merge a1fd2cf8cd dr/i18n-die-warn-error-usage later to maint).
 
  * References to commands-to-be-typed-literally in "git rebase"
    documentation mark-up have been corrected.
-   (merge 54e51e559e ds/git-rebase-doc-markup later to maint).
 
  * In a non-bare repository, the behavior of Git when the
    core.worktree configuration variable points at a directory that has
    a repository as its subdirectory, regressed in Git 2.27 days.
-   (merge d6c9a71755 gg/worktree-from-the-above later to maint).
 
  * Recent update to vimdiff layout code has been made more robust
    against different end-user vim settings.
-   (merge f3d7623a13 fr/vimdiff-layout-fix later to maint).
 
  * Plug various memory leaks.
    (merge ece3974ba6 ab/leakfix later to maint).
@@ -122,7 +142,6 @@ Fixes since v2.37
 
  * Fixes a long-standing corner case bug around directory renames in
    the merge-ort strategy.
-   (merge 751e165424 en/merge-dual-dir-renames-fix later to maint).
 
  * The resolve-undo information in the index was not protected against
    GC, which has been corrected.
@@ -139,15 +158,59 @@ Fixes since v2.37
 
  * An earlier attempt to plug leaks placed a clean-up label to jump to
    at a bogus place, which as been corrected.
-   (merge 04393ae7f7 jk/diff-files-cleanup-fix later to maint).
+
+ * Variable quoting fix in the vimdiff driver of "git mergetool"
+
+ * "git shortlog -n" relied on the underlying qsort() to be stable,
+   which shouldn't have.  Fixed.
+
+ * A fix for a regression in test framework.
+
+ * mkstemp() emulation on Windows has been improved.
+   (merge ae25974de3 rs/mingw-tighten-mkstemp later to maint).
+
+ * Add missing documentation for "include" and "includeIf" features in
+   "git config" file format, which incidentally teaches the command
+   line completion to include them in its offerings.
+   (merge 07aed58017 mb/config-document-include later to maint).
+
+ * Avoid "white/black-list" in documentation and code comments.
+   (merge f5adaa5cc3 ds/doc-wo-whitelist later to maint).
+
+ * Workaround for a compiler warning against use of die() in
+   osx-keychain (in contrib/).
+   (merge f2fc531585 ld/osx-keychain-usage-fix later to maint).
+
+ * Workaround for a false positive compiler warning.
+   (merge b4f52f09ae ds/win-syslog-compiler-fix later to maint).
+
+ * "git p4" working on UTF-16 files on Windows did not implement
+   CRLF-to-LF conversion correctly, which has been corrected.
+   (merge 4d35f74421 mb/p4-utf16-crlf later to maint).
+
+ * "git p4" did not handle non-ASCII client name well, which has been
+   corrected.
+   (merge d205483695 kk/p4-client-name-encoding-fix later to maint).
+
+ * "rerere-train" script (in contrib/) used to honor commit.gpgSign
+   while recreating the throw-away merges.
+   (merge cc391fc886 cl/rerere-train-with-no-sign later to maint).
+
+ * "git checkout" miscounted the paths it updated, which has been
+   corrected.
+   (merge 611c7785e8 mt/checkout-count-fix later to maint).
+
+ * Fix for a bug that makes write-tree to fail to write out a
+   non-existent index as a tree, introduced in 2.37.
+   (merge 4447d4129d tk/untracked-cache-with-uall later to maint).
+
+ * There was a bug in the codepath to upgrade generation information
+   in commit-graph from v1 to v2 format, which has been corrected.
+   (merge 9550f6c16a tb/commit-graph-genv2-upgrade-fix later to maint).
 
  * Other code cleanup, docfix, build fix, etc.
-   (merge 5fd9d1738e jk/revisions-doc-markup-fix later to maint).
-   (merge 1971510c35 pb/diff-doc-raw-format later to maint).
-   (merge a3ba4fa715 cr/setup-bug-typo later to maint).
-   (merge 85845580d9 ds/vscode-settings later to maint).
-   (merge ec2f6c0cca en/t6429-test-must-be-empty-fix later to maint).
-   (merge 14deb585fb tb/pack-objects-remove-pahole-comment later to maint).
-   (merge 2ffb7d13ee ds/t5510-brokequote later to maint).
-   (merge 18337d406f ll/ls-files-tests-update later to maint).
-   (merge 8cdab69d96 tk/rev-parse-doc-clarify-at-u later to maint).
+   (merge a700395eaf ma/t4200-update later to maint).
+   (merge ae436f283c ma/sparse-checkout-cone-doc-fix later to maint).
+   (merge a10f6e2bda sg/index-format-doc-update later to maint).
+   (merge ce5f07983d mt/pkt-line-comment-tweak later to maint).
+   (merge 1e11fab59c jc/string-list-cleanup later to maint).
