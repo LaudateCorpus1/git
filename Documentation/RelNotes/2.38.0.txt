@@ -6,7 +6,7 @@ UI, Workflows & Features
  * "git remote show [-n] frotz" now pays attention to negative
    pathspec.
 
- * "git push" sometimes perform poorly when reachability bitmaps are
+ * "git push" sometimes performs poorly when reachability bitmaps are
    used, even in a repository where other operations are helped by
    bitmaps.  The push.useBitmaps configuration variable is introduced
    to allow disabling use of reachability bitmaps only for "git push".
@@ -27,7 +27,7 @@ UI, Workflows & Features
    what locale they are in by sending Accept-Language HTTP header, but
    this was done only for some requests but not others.
 
- * Introduce a discovery.barerepository configuration variable that
+ * Introduce a safe.barerepository configuration variable that
    allows users to forbid discovery of bare repositories.
 
  * Various messages that come from the pack-bitmap codepaths have been
@@ -75,6 +75,19 @@ UI, Workflows & Features
  * "git clone" command learned the "--bundle-uri" option to coordinate
    with hosting sites the use of pre-prepared bundle files.
 
+ * "git range-diff" learned to honor pathspec argument if given.
+
+ * "git format-patch --from=<ident>" can be told to add an in-body
+   "From:" line even for commits that are authored by the given
+   <ident> with "--force-in-body-from" option.
+
+ * The built-in fsmonitor refuses to work on a network mounted
+   repositories; a configuration knob for users to override this has
+   been introduced.
+
+ * The "scalar" addition from Microsoft is now part of the core Git
+   installation.
+
 
 Performance, Internal Implementation, Development Support etc.
 
@@ -117,7 +130,7 @@ Performance, Internal Implementation, Development Support etc.
 
  * The way "git multi-pack" uses parse-options API has been improved.
 
- * A coccinelle rule (in contrib/) to encourage use of COPY_ARRAY
+ * A Coccinelle rule (in contrib/) to encourage use of COPY_ARRAY
    macro has been improved.
 
  * API tweak to make it easier to run fuzz testing on commit-graph parser.
@@ -147,6 +160,26 @@ Performance, Internal Implementation, Development Support etc.
 
  * The pack bitmap file gained a bitmap-lookup table to speed up
    locating the necessary bitmap for a given commit.
+
+ * The assembly version of SHA-1 implementation for PPC has been
+   removed.
+
+ * The server side that responds to "git fetch" and "git clone"
+   request has been optimized by allowing it to send objects in its
+   object store without recomputing and validating the object names.
+
+ * Annotate function parameters that are not used (but cannot be
+   removed for structural reasons), to prepare us to later compile
+   with -Wunused warning turned on.
+
+ * Share the text used to explain configuration variables used by "git
+   <subcmd>" in "git help <subcmd>" with the text from "git help config".
+
+ * "git mv A B" in a sparsely populated working tree can be asked to
+   move a path from a directory that is "in cone" to another directory
+   that is "out of cone".  Handling of such a case has been improved.
+
+ * The chainlint script for our tests has been revamped.
 
 
 Fixes since v2.37
@@ -273,7 +306,7 @@ Fixes since v2.37
  * "git fsck" reads mode from tree objects but canonicalizes the mode
    before passing it to the logic to check object sanity, which has
    hid broken tree objects from the checking logic.  This has been
-   corrected, but to help exiting projects with broken tree objects
+   corrected, but to help existing projects with broken tree objects
    that they cannot fix retroactively, the severity of anomalies this
    code detects has been demoted to "info" for now.
 
@@ -282,12 +315,10 @@ Fixes since v2.37
 
  * An earlier optimization discarded a tree-object buffer that is
    still in use, which has been corrected.
-   (merge 1490d7d82d jk/is-promisor-object-keep-tree-in-use later to maint).
 
  * Fix deadlocks between main Git process and subprocess spawned via
    the pipe_command() API, that can kill "git add -p" that was
    reimplemented in C recently.
-   (merge 716c1f649e jk/pipe-command-nonblock later to maint).
 
  * The sequencer machinery translated messages left in the reflog by
    mistake, which has been corrected.
@@ -295,20 +326,16 @@ Fixes since v2.37
  * xcalloc(), imitating calloc(), takes "number of elements of the
    array", and "size of a single element", in this order.  A call that
    does not follow this ordering has been corrected.
-   (merge c4bbd9bb8f sg/xcalloc-cocci-fix later to maint).
 
  * The preload-index codepath made copies of pathspec to give to
    multiple threads, which were left leaked.
-   (merge 23578904da ad/preload-plug-memleak later to maint).
 
  * Update the version of Ubuntu used for GitHub Actions CI from 18.04
    to 22.04.
-   (merge ef46584831 ds/github-actions-use-newer-ubuntu later to maint).
 
  * The auto-stashed local changes created by "git merge --autostash"
    was mixed into a conflicted state left in the working tree, which
    has been corrected.
-   (merge d3a9295ada en/merge-unstash-only-on-clean-merge later to maint).
 
  * Multi-pack index got corrupted when preferred pack changed from one
    pack to another in a certain way, which has been corrected.
@@ -323,6 +350,47 @@ Fixes since v2.37
    to schedule tasks.
    (merge ee69e7884e bc/gc-crontab-fix later to maint).
 
+ * Those who use diff-so-fancy as the diff-filter noticed a regression
+   or two in the code that parses the diff output in the built-in
+   version of "add -p", which has been corrected.
+   (merge 0a101676e5 js/add-p-diff-parsing-fix later to maint).
+
+ * Segfault fix-up to an earlier fix to the topic to teach "git reset"
+   and "git checkout" work better in a sparse checkout.
+   (merge 037f8ea6d9 vd/sparse-reset-checkout-fixes later to maint).
+
+ * "git diff --no-index A B" managed its the pathnames of its two
+   input files rather haphazardly, sometimes leaking them.  The
+   command line argument processing has been straightened out to clean
+   it up.
+   (merge 2b43dd0eb5 rs/diff-no-index-cleanup later to maint).
+
+ * "git rev-list --verify-objects" ought to inspect the contents of
+   objects and notice corrupted ones, but it didn't when the commit
+   graph is in use, which has been corrected.
+   (merge b27ccae34b jk/rev-list-verify-objects-fix later to maint).
+
+ * More fixes to "add -p"
+   (merge 64ec8efb83 js/builtin-add-p-portability-fix later to maint).
+
+ * The parser in the script interface to parse-options in "git
+   rev-parse" has been updated to diagnose a bogus input correctly.
+   (merge f20b9c36d0 ow/rev-parse-parseopt-fix later to maint).
+
+ * The code that manages list-object-filter structure, used in partial
+   clones, leaked the instances, which has been plugged.
+   (merge 66eede4a37 jk/plug-list-object-filter-leaks later to maint).
+
+ * Fix another UI regression in the reimplemented "add -p".
+   (merge f6f0ee247f rs/add-p-worktree-mode-prompt-fix later to maint).
+
+ * "git fetch" over protocol v2 sent an incorrect ref prefix request
+   to the server and made "git pull" with configured fetch refspec
+   that does not cover the remote branch to merge with fail, which has
+   been corrected.
+   (merge 49ca2fba39 jk/proto-v2-ref-prefix-fix later to maint).
+
  * Other code cleanup, docfix, build fix, etc.
    (merge 77b9e85c0f vd/fix-perf-tests later to maint).
    (merge 0682bc43f5 jk/test-crontab-fixes later to maint).
+   (merge b46dd1726c cc/doc-trailer-whitespace-rules later to maint).
