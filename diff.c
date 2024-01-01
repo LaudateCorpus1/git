@@ -1,34 +1,47 @@
 /*
  * Copyright (C) 2005 Junio C Hamano
  */
-#include "cache.h"
+#include "git-compat-util.h"
+#include "abspath.h"
+#include "base85.h"
 #include "config.h"
+#include "convert.h"
+#include "environment.h"
+#include "gettext.h"
 #include "tempfile.h"
 #include "quote.h"
 #include "diff.h"
 #include "diffcore.h"
 #include "delta.h"
+#include "hex.h"
 #include "xdiff-interface.h"
 #include "color.h"
 #include "attr.h"
 #include "run-command.h"
 #include "utf8.h"
-#include "object-store.h"
+#include "object-store-ll.h"
 #include "userdiff.h"
 #include "submodule-config.h"
 #include "submodule.h"
 #include "hashmap.h"
 #include "mem-pool.h"
-#include "ll-merge.h"
+#include "merge-ll.h"
 #include "string-list.h"
 #include "strvec.h"
 #include "graph.h"
+#include "oid-array.h"
 #include "packfile.h"
+#include "pager.h"
 #include "parse-options.h"
 #include "help.h"
 #include "promisor-remote.h"
 #include "dir.h"
+#include "object-file.h"
+#include "object-name.h"
+#include "read-cache-ll.h"
+#include "setup.h"
 #include "strmap.h"
+#include "ws.h"
 
 #ifdef NO_FAST_WORKING_DIRECTORY
 #define FAST_WORKING_DIRECTORY 0
@@ -52,6 +65,7 @@ int diff_auto_refresh_index = 1;
 static int diff_mnemonic_prefix;
 static int diff_no_prefix;
 static int diff_relative;
+static int diff_stat_name_width;
 static int diff_stat_graph_width;
 static int diff_dirstat_permille_default = 30;
 static struct diff_options default_diff_options;
@@ -127,7 +141,7 @@ static int parse_dirstat_params(struct diff_options *options, const char *params
 	int i;
 
 	if (*params_copy)
-		string_list_split_in_place(&params, params_copy, ',', -1);
+		string_list_split_in_place(&params, params_copy, ",", -1);
 	for (i = 0; i < params.nr; i++) {
 		const char *p = params.items[i].string;
 		if (!strcmp(p, "changes")) {
@@ -343,7 +357,8 @@ static unsigned parse_color_moved_ws(const char *arg)
 	return ret;
 }
 
-int git_diff_ui_config(const char *var, const char *value, void *cb)
+int git_diff_ui_config(const char *var, const char *value,
+		       const struct config_context *ctx, void *cb)
 {
 	if (!strcmp(var, "diff.color") || !strcmp(var, "color.diff")) {
 		diff_use_color_default = git_config_colorbool(var, value);
@@ -357,20 +372,24 @@ int git_diff_ui_config(const char *var, const char *value, void *cb)
 		return 0;
 	}
 	if (!strcmp(var, "diff.colormovedws")) {
-		unsigned cm = parse_color_moved_ws(value);
+		unsigned cm;
+		if (!value)
+			return config_error_nonbool(var);
+		cm = parse_color_moved_ws(value);
 		if (cm & COLOR_MOVED_WS_ERROR)
 			return -1;
 		diff_color_moved_ws_default = cm;
 		return 0;
 	}
 	if (!strcmp(var, "diff.context")) {
-		diff_context_default = git_config_int(var, value);
+		diff_context_default = git_config_int(var, value, ctx->kvi);
 		if (diff_context_default < 0)
 			return -1;
 		return 0;
 	}
 	if (!strcmp(var, "diff.interhunkcontext")) {
-		diff_interhunk_context_default = git_config_int(var, value);
+		diff_interhunk_context_default = git_config_int(var, value,
+								ctx->kvi);
 		if (diff_interhunk_context_default < 0)
 			return -1;
 		return 0;
@@ -395,8 +414,12 @@ int git_diff_ui_config(const char *var, const char *value, void *cb)
 		diff_relative = git_config_bool(var, value);
 		return 0;
 	}
+	if (!strcmp(var, "diff.statnamewidth")) {
+		diff_stat_name_width = git_config_int(var, value, ctx->kvi);
+		return 0;
+	}
 	if (!strcmp(var, "diff.statgraphwidth")) {
-		diff_stat_graph_width = git_config_int(var, value);
+		diff_stat_graph_width = git_config_int(var, value, ctx->kvi);
 		return 0;
 	}
 	if (!strcmp(var, "diff.external"))
@@ -406,10 +429,15 @@ int git_diff_ui_config(const char *var, const char *value, void *cb)
 	if (!strcmp(var, "diff.orderfile"))
 		return git_config_pathname(&diff_order_file_cfg, var, value);
 
-	if (!strcmp(var, "diff.ignoresubmodules"))
+	if (!strcmp(var, "diff.ignoresubmodules")) {
+		if (!value)
+			return config_error_nonbool(var);
 		handle_ignore_submodules_arg(&default_diff_options, value);
+	}
 
 	if (!strcmp(var, "diff.submodule")) {
+		if (!value)
+			return config_error_nonbool(var);
 		if (parse_submodule_params(&default_diff_options, value))
 			warning(_("Unknown value for 'diff.submodule' config variable: '%s'"),
 				value);
@@ -417,24 +445,28 @@ int git_diff_ui_config(const char *var, const char *value, void *cb)
 	}
 
 	if (!strcmp(var, "diff.algorithm")) {
+		if (!value)
+			return config_error_nonbool(var);
 		diff_algorithm = parse_algorithm_value(value);
 		if (diff_algorithm < 0)
-			return -1;
+			return error(_("unknown value for config '%s': %s"),
+				     var, value);
 		return 0;
 	}
 
 	if (git_color_config(var, value, cb) < 0)
 		return -1;
 
-	return git_diff_basic_config(var, value, cb);
+	return git_diff_basic_config(var, value, ctx, cb);
 }
 
-int git_diff_basic_config(const char *var, const char *value, void *cb)
+int git_diff_basic_config(const char *var, const char *value,
+			  const struct config_context *ctx, void *cb)
 {
 	const char *name;
 
 	if (!strcmp(var, "diff.renamelimit")) {
-		diff_rename_limit_default = git_config_int(var, value);
+		diff_rename_limit_default = git_config_int(var, value, ctx->kvi);
 		return 0;
 	}
 
@@ -452,9 +484,13 @@ int git_diff_basic_config(const char *var, const char *value, void *cb)
 	}
 
 	if (!strcmp(var, "diff.wserrorhighlight")) {
-		int val = parse_ws_error_highlight(value);
+		int val;
+		if (!value)
+			return config_error_nonbool(var);
+		val = parse_ws_error_highlight(value);
 		if (val < 0)
-			return -1;
+			return error(_("unknown value for config '%s': %s"),
+				     var, value);
 		ws_error_highlight_default = val;
 		return 0;
 	}
@@ -469,6 +505,8 @@ int git_diff_basic_config(const char *var, const char *value, void *cb)
 
 	if (!strcmp(var, "diff.dirstat")) {
 		struct strbuf errmsg = STRBUF_INIT;
+		if (!value)
+			return config_error_nonbool(var);
 		default_diff_options.dirstat_permille = diff_dirstat_permille_default;
 		if (parse_dirstat_params(&default_diff_options, value, &errmsg))
 			warning(_("Found errors in 'diff.dirstat' config variable:\n%s"),
@@ -481,7 +519,7 @@ int git_diff_basic_config(const char *var, const char *value, void *cb)
 	if (git_diff_heuristic_config(var, value, cb) < 0)
 		return -1;
 
-	return git_default_config(var, value, cb);
+	return git_default_config(var, value, ctx, cb);
 }
 
 static char *quote_two(const char *one, const char *two)
@@ -604,7 +642,7 @@ static unsigned long diff_filespec_size(struct repository *r,
 	return one->size;
 }
 
-static int count_trailing_blank(mmfile_t *mf, unsigned ws_rule)
+static int count_trailing_blank(mmfile_t *mf)
 {
 	char *ptr = mf->ptr;
 	long size = mf->size;
@@ -622,7 +660,7 @@ static int count_trailing_blank(mmfile_t *mf, unsigned ws_rule)
 		for (prev_eol = ptr; mf->ptr <= prev_eol; prev_eol--)
 			if (*prev_eol == '\n')
 				break;
-		if (!ws_blank_line(prev_eol + 1, ptr - prev_eol, ws_rule))
+		if (!ws_blank_line(prev_eol + 1, ptr - prev_eol))
 			break;
 		cnt++;
 		ptr = prev_eol - 1;
@@ -634,9 +672,8 @@ static void check_blank_at_eof(mmfile_t *mf1, mmfile_t *mf2,
 			       struct emit_callback *ecbdata)
 {
 	int l1, l2, at;
-	unsigned ws_rule = ecbdata->ws_rule;
-	l1 = count_trailing_blank(mf1, ws_rule);
-	l2 = count_trailing_blank(mf2, ws_rule);
+	l1 = count_trailing_blank(mf1);
+	l2 = count_trailing_blank(mf2);
 	if (l2 <= l1) {
 		ecbdata->blank_at_eof_in_preimage = 0;
 		ecbdata->blank_at_eof_in_postimage = 0;
@@ -1583,7 +1620,7 @@ static int new_blank_line_at_eof(struct emit_callback *ecbdata, const char *line
 	      ecbdata->blank_at_eof_in_preimage <= ecbdata->lno_in_preimage &&
 	      ecbdata->blank_at_eof_in_postimage <= ecbdata->lno_in_postimage))
 		return 0;
-	return ws_blank_line(line, len, ecbdata->ws_rule);
+	return ws_blank_line(line, len);
 }
 
 static void emit_add_line(struct emit_callback *ecbdata,
@@ -1955,7 +1992,7 @@ static int color_words_output_graph_prefix(struct diff_words_data *diff_words)
 static void fn_out_diff_words_aux(void *priv,
 				  long minus_first, long minus_len,
 				  long plus_first, long plus_len,
-				  const char *func, long funclen)
+				  const char *func UNUSED, long funclen UNUSED)
 {
 	struct diff_words_data *diff_words = priv;
 	struct diff_words_style *style = diff_words->style;
@@ -2488,6 +2525,9 @@ static int diffstat_consume(void *priv, char *line, unsigned long len)
 	struct diffstat_t *diffstat = priv;
 	struct diffstat_file *x = diffstat->files[diffstat->nr - 1];
 
+	if (!len)
+		BUG("xdiff fed us an empty line");
+
 	if (line[0] == '+')
 		x->added++;
 	else if (line[0] == '-')
@@ -2621,7 +2661,7 @@ static void show_stats(struct diffstat_t *data, struct diff_options *options)
 			continue;
 		}
 		fill_print_name(file);
-		len = strlen(file->print_name);
+		len = utf8_strwidth(file->print_name);
 		if (max_len < len)
 			max_len = len;
 
@@ -2674,6 +2714,11 @@ static void show_stats(struct diffstat_t *data, struct diff_options *options)
 	 * making the line longer than the maximum width.
 	 */
 
+	/*
+	 * NEEDSWORK: line_prefix is often used for "log --graph" output
+	 * and contains ANSI-colored string.  utf8_strnwidth() should be
+	 * used to correctly count the display width instead of strlen().
+	 */
 	if (options->stat_width == -1)
 		width = term_columns() - strlen(line_prefix);
 	else
@@ -2681,12 +2726,14 @@ static void show_stats(struct diffstat_t *data, struct diff_options *options)
 	number_width = decimal_width(max_change) > number_width ?
 		decimal_width(max_change) : number_width;
 
+	if (options->stat_name_width == -1)
+		options->stat_name_width = diff_stat_name_width;
 	if (options->stat_graph_width == -1)
 		options->stat_graph_width = diff_stat_graph_width;
 
 	/*
-	 * Guarantee 3/8*16==6 for the graph part
-	 * and 5/8*16==10 for the filename part
+	 * Guarantee 3/8*16 == 6 for the graph part
+	 * and 5/8*16 == 10 for the filename part
 	 */
 	if (width < 16 + 6 + number_width)
 		width = 16 + 6 + number_width;
@@ -2735,7 +2782,7 @@ static void show_stats(struct diffstat_t *data, struct diff_options *options)
 		char *name = file->print_name;
 		uintmax_t added = file->added;
 		uintmax_t deleted = file->deleted;
-		int name_len;
+		int name_len, padding;
 
 		if (!file->is_interesting && (added + deleted == 0))
 			continue;
@@ -2744,20 +2791,34 @@ static void show_stats(struct diffstat_t *data, struct diff_options *options)
 		 * "scale" the filename
 		 */
 		len = name_width;
-		name_len = strlen(name);
+		name_len = utf8_strwidth(name);
 		if (name_width < name_len) {
 			char *slash;
 			prefix = "...";
 			len -= 3;
+			/*
+			 * NEEDSWORK: (name_len - len) counts the display
+			 * width, which would be shorter than the byte
+			 * length of the corresponding substring.
+			 * Advancing "name" by that number of bytes does
+			 * *NOT* skip over that many columns, so it is
+			 * very likely that chomping the pathname at the
+			 * slash we will find starting from "name" will
+			 * leave the resulting string still too long.
+			 */
 			name += name_len - len;
 			slash = strchr(name, '/');
 			if (slash)
 				name = slash;
 		}
+		padding = len - utf8_strwidth(name);
+		if (padding < 0)
+			padding = 0;
 
 		if (file->is_binary) {
-			strbuf_addf(&out, " %s%-*s |", prefix, len, name);
-			strbuf_addf(&out, " %*s", number_width, "Bin");
+			strbuf_addf(&out, " %s%s%*s | %*s",
+				    prefix, name, padding, "",
+				    number_width, "Bin");
 			if (!added && !deleted) {
 				strbuf_addch(&out, '\n');
 				emit_diff_symbol(options, DIFF_SYMBOL_STATS_LINE,
@@ -2777,8 +2838,9 @@ static void show_stats(struct diffstat_t *data, struct diff_options *options)
 			continue;
 		}
 		else if (file->is_unmerged) {
-			strbuf_addf(&out, " %s%-*s |", prefix, len, name);
-			strbuf_addstr(&out, " Unmerged\n");
+			strbuf_addf(&out, " %s%s%*s | %*s",
+				    prefix, name, padding, "",
+				    number_width, "Unmerged\n");
 			emit_diff_symbol(options, DIFF_SYMBOL_STATS_LINE,
 					 out.buf, out.len, 0);
 			strbuf_reset(&out);
@@ -2804,10 +2866,10 @@ static void show_stats(struct diffstat_t *data, struct diff_options *options)
 				add = total - del;
 			}
 		}
-		strbuf_addf(&out, " %s%-*s |", prefix, len, name);
-		strbuf_addf(&out, " %*"PRIuMAX"%s",
-			number_width, added + deleted,
-			added + deleted ? " " : "");
+		strbuf_addf(&out, " %s%s%*s | %*"PRIuMAX"%s",
+			    prefix, name, padding, "",
+			    number_width, added + deleted,
+			    added + deleted ? " " : "");
 		show_graph(&out, '+', add, add_c, reset);
 		show_graph(&out, '-', del, del_c, reset);
 		strbuf_addch(&out, '\n');
@@ -2971,6 +3033,24 @@ static int dirstat_compare(const void *_a, const void *_b)
 	return strcmp(a->name, b->name);
 }
 
+static void conclude_dirstat(struct diff_options *options,
+			     struct dirstat_dir *dir,
+			     unsigned long changed)
+{
+	struct dirstat_file *to_free = dir->files;
+
+	if (!changed) {
+		/* This can happen even with many files, if everything was renames */
+		;
+	} else {
+		/* Show all directories with more than x% of the changes */
+		QSORT(dir->files, dir->nr, dirstat_compare);
+		gather_dirstat(options, dir, changed, "", 0);
+	}
+
+	free(to_free);
+}
+
 static void show_dirstat(struct diff_options *options)
 {
 	int i;
@@ -3060,13 +3140,7 @@ found_damage:
 		dir.nr++;
 	}
 
-	/* This can happen even with many files, if everything was renames */
-	if (!changed)
-		return;
-
-	/* Show all directories with more than x% of the changes */
-	QSORT(dir.files, dir.nr, dirstat_compare);
-	gather_dirstat(options, &dir, changed, "", 0);
+	conclude_dirstat(options, &dir, changed);
 }
 
 static void show_dirstat_by_line(struct diffstat_t *data, struct diff_options *options)
@@ -3104,13 +3178,7 @@ static void show_dirstat_by_line(struct diffstat_t *data, struct diff_options *o
 		dir.nr++;
 	}
 
-	/* This can happen even with many files, if everything was renames */
-	if (!changed)
-		return;
-
-	/* Show all directories with more than x% of the changes */
-	QSORT(dir.files, dir.nr, dirstat_compare);
-	gather_dirstat(options, &dir, changed, "", 0);
+	conclude_dirstat(options, &dir, changed);
 }
 
 static void free_diffstat_file(struct diffstat_file *f)
@@ -3162,8 +3230,9 @@ static int is_conflict_marker(const char *line, int marker_size, unsigned long l
 }
 
 static void checkdiff_consume_hunk(void *priv,
-				   long ob, long on, long nb, long nn,
-				   const char *func, long funclen)
+				   long ob UNUSED, long on UNUSED,
+				   long nb, long nn UNUSED,
+				   const char *func UNUSED, long funclen UNUSED)
 
 {
 	struct checkdiff_t *data = priv;
@@ -3351,6 +3420,17 @@ void diff_set_mnemonic_prefix(struct diff_options *options, const char *a, const
 		options->b_prefix = b;
 }
 
+void diff_set_noprefix(struct diff_options *options)
+{
+	options->a_prefix = options->b_prefix = "";
+}
+
+void diff_set_default_prefix(struct diff_options *options)
+{
+	options->a_prefix = "a/";
+	options->b_prefix = "b/";
+}
+
 struct userdiff_driver *get_textconv(struct repository *r,
 				     struct diff_filespec *one)
 {
@@ -3412,6 +3492,22 @@ static int diff_filepair_is_phoney(struct diff_filespec *one,
 	 * "remerge CONFLICT" header associated with the path.
 	 */
 	return !DIFF_FILE_VALID(one) && !DIFF_FILE_VALID(two);
+}
+
+static int set_diff_algorithm(struct diff_options *opts,
+			      const char *alg)
+{
+	long value = parse_algorithm_value(alg);
+
+	if (value < 0)
+		return -1;
+
+	/* clear out previous settings */
+	DIFF_XDL_CLR(opts, NEED_MINIMAL);
+	opts->xdl_opts &= ~XDF_DIFF_ALGORITHM_MASK;
+	opts->xdl_opts |= value;
+
+	return 0;
 }
 
 static void builtin_diff(const char *name_a,
@@ -3491,18 +3587,21 @@ static void builtin_diff(const char *name_a,
 		strbuf_addf(&header, "%s%snew file mode %06o%s\n", line_prefix, meta, two->mode, reset);
 		if (xfrm_msg)
 			strbuf_addstr(&header, xfrm_msg);
+		o->found_changes = 1;
 		must_show_header = 1;
 	}
 	else if (lbl[1][0] == '/') {
 		strbuf_addf(&header, "%s%sdeleted file mode %06o%s\n", line_prefix, meta, one->mode, reset);
 		if (xfrm_msg)
 			strbuf_addstr(&header, xfrm_msg);
+		o->found_changes = 1;
 		must_show_header = 1;
 	}
 	else {
 		if (one->mode != two->mode) {
 			strbuf_addf(&header, "%s%sold mode %06o%s\n", line_prefix, meta, one->mode, reset);
 			strbuf_addf(&header, "%s%snew mode %06o%s\n", line_prefix, meta, two->mode, reset);
+			o->found_changes = 1;
 			must_show_header = 1;
 		}
 		if (xfrm_msg)
@@ -4190,7 +4289,6 @@ static void prep_temp_blob(struct index_state *istate,
 }
 
 static struct diff_tempfile *prepare_temp_file(struct repository *r,
-					       const char *name,
 					       struct diff_filespec *one)
 {
 	struct diff_tempfile *temp = claim_diff_tempfile();
@@ -4208,18 +4306,18 @@ static struct diff_tempfile *prepare_temp_file(struct repository *r,
 
 	if (!S_ISGITLINK(one->mode) &&
 	    (!one->oid_valid ||
-	     reuse_worktree_file(r->index, name, &one->oid, 1))) {
+	     reuse_worktree_file(r->index, one->path, &one->oid, 1))) {
 		struct stat st;
-		if (lstat(name, &st) < 0) {
+		if (lstat(one->path, &st) < 0) {
 			if (errno == ENOENT)
 				goto not_a_valid_file;
-			die_errno("stat(%s)", name);
+			die_errno("stat(%s)", one->path);
 		}
 		if (S_ISLNK(st.st_mode)) {
 			struct strbuf sb = STRBUF_INIT;
-			if (strbuf_readlink(&sb, name, st.st_size) < 0)
-				die_errno("readlink(%s)", name);
-			prep_temp_blob(r->index, name, temp, sb.buf, sb.len,
+			if (strbuf_readlink(&sb, one->path, st.st_size) < 0)
+				die_errno("readlink(%s)", one->path);
+			prep_temp_blob(r->index, one->path, temp, sb.buf, sb.len,
 				       (one->oid_valid ?
 					&one->oid : null_oid()),
 				       (one->oid_valid ?
@@ -4228,7 +4326,7 @@ static struct diff_tempfile *prepare_temp_file(struct repository *r,
 		}
 		else {
 			/* we can borrow from the file in the work tree */
-			temp->name = name;
+			temp->name = one->path;
 			if (!one->oid_valid)
 				oid_to_hex_r(temp->hex, null_oid());
 			else
@@ -4246,7 +4344,7 @@ static struct diff_tempfile *prepare_temp_file(struct repository *r,
 	else {
 		if (diff_populate_filespec(r, one, NULL))
 			die("cannot read data blob for %s", one->path);
-		prep_temp_blob(r->index, name, temp,
+		prep_temp_blob(r->index, one->path, temp,
 			       one->data, one->size,
 			       &one->oid, one->mode);
 	}
@@ -4255,10 +4353,9 @@ static struct diff_tempfile *prepare_temp_file(struct repository *r,
 
 static void add_external_diff_name(struct repository *r,
 				   struct strvec *argv,
-				   const char *name,
 				   struct diff_filespec *df)
 {
-	struct diff_tempfile *temp = prepare_temp_file(r, name, df);
+	struct diff_tempfile *temp = prepare_temp_file(r, df);
 	strvec_push(argv, temp->name);
 	strvec_push(argv, temp->hex);
 	strvec_push(argv, temp->mode);
@@ -4278,35 +4375,32 @@ static void run_external_diff(const char *pgm,
 			      const char *xfrm_msg,
 			      struct diff_options *o)
 {
-	struct strvec argv = STRVEC_INIT;
-	struct strvec env = STRVEC_INIT;
+	struct child_process cmd = CHILD_PROCESS_INIT;
 	struct diff_queue_struct *q = &diff_queued_diff;
 
-	strvec_push(&argv, pgm);
-	strvec_push(&argv, name);
+	strvec_push(&cmd.args, pgm);
+	strvec_push(&cmd.args, name);
 
 	if (one && two) {
-		add_external_diff_name(o->repo, &argv, name, one);
-		if (!other)
-			add_external_diff_name(o->repo, &argv, name, two);
-		else {
-			add_external_diff_name(o->repo, &argv, other, two);
-			strvec_push(&argv, other);
-			strvec_push(&argv, xfrm_msg);
+		add_external_diff_name(o->repo, &cmd.args, one);
+		add_external_diff_name(o->repo, &cmd.args, two);
+		if (other) {
+			strvec_push(&cmd.args, other);
+			strvec_push(&cmd.args, xfrm_msg);
 		}
 	}
 
-	strvec_pushf(&env, "GIT_DIFF_PATH_COUNTER=%d", ++o->diff_path_counter);
-	strvec_pushf(&env, "GIT_DIFF_PATH_TOTAL=%d", q->nr);
+	strvec_pushf(&cmd.env, "GIT_DIFF_PATH_COUNTER=%d",
+		     ++o->diff_path_counter);
+	strvec_pushf(&cmd.env, "GIT_DIFF_PATH_TOTAL=%d", q->nr);
 
 	diff_free_filespec_data(one);
 	diff_free_filespec_data(two);
-	if (run_command_v_opt_cd_env(argv.v, RUN_USING_SHELL, NULL, env.v))
+	cmd.use_shell = 1;
+	if (run_command(&cmd))
 		die(_("external diff died, stopping at %s"), name);
 
 	remove_tempfile();
-	strvec_clear(&argv);
-	strvec_clear(&env);
 }
 
 static int similarity_index(struct diff_filepair *p)
@@ -4317,7 +4411,7 @@ static int similarity_index(struct diff_filepair *p)
 static const char *diff_abbrev_oid(const struct object_id *oid, int abbrev)
 {
 	if (startup_info->have_repository)
-		return find_unique_abbrev(oid, abbrev);
+		return repo_find_unique_abbrev(the_repository, oid, abbrev);
 	else {
 		char *hex = oid_to_hex(oid);
 		if (abbrev < 0)
@@ -4422,15 +4516,13 @@ static void run_diff_cmd(const char *pgm,
 	const char *xfrm_msg = NULL;
 	int complete_rewrite = (p->status == DIFF_STATUS_MODIFIED) && p->score;
 	int must_show_header = 0;
+	struct userdiff_driver *drv = NULL;
 
-
-	if (o->flags.allow_external) {
-		struct userdiff_driver *drv;
-
+	if (o->flags.allow_external || !o->ignore_driver_algorithm)
 		drv = userdiff_find_by_path(o->repo->index, attr_path);
-		if (drv && drv->external)
-			pgm = drv->external;
-	}
+
+	if (o->flags.allow_external && drv && drv->external)
+		pgm = drv->external;
 
 	if (msg) {
 		/*
@@ -4447,12 +4539,16 @@ static void run_diff_cmd(const char *pgm,
 		run_external_diff(pgm, name, other, one, two, xfrm_msg, o);
 		return;
 	}
-	if (one && two)
+	if (one && two) {
+		if (!o->ignore_driver_algorithm && drv && drv->algorithm)
+			set_diff_algorithm(o, drv->algorithm);
+
 		builtin_diff(name, other ? other : name,
 			     one, two, xfrm_msg, must_show_header,
 			     o, complete_rewrite);
-	else
+	} else {
 		fprintf(o->file, "* Unmerged path %s\n", name);
+	}
 }
 
 static void diff_fill_oid_info(struct diff_filespec *one, struct index_state *istate)
@@ -4549,6 +4645,14 @@ static void run_diffstat(struct diff_filepair *p, struct diff_options *o,
 	const char *name;
 	const char *other;
 
+	if (!o->ignore_driver_algorithm) {
+		struct userdiff_driver *drv = userdiff_find_by_path(o->repo->index,
+								    p->one->path);
+
+		if (drv && drv->algorithm)
+			set_diff_algorithm(o, drv->algorithm);
+	}
+
 	if (DIFF_PAIR_UNMERGED(p)) {
 		/* unmerged */
 		builtin_diffstat(p->one->path, NULL, NULL, NULL,
@@ -4593,8 +4697,6 @@ static void run_checkdiff(struct diff_filepair *p, struct diff_options *o)
 	builtin_checkdiff(name, other, attr_path, p->one, p->two, o);
 }
 
-static void prep_parse_options(struct diff_options *options);
-
 void repo_diff_setup(struct repository *r, struct diff_options *options)
 {
 	memcpy(options, &default_diff_options, sizeof(*options));
@@ -4632,16 +4734,13 @@ void repo_diff_setup(struct repository *r, struct diff_options *options)
 		options->flags.ignore_untracked_in_submodules = 1;
 
 	if (diff_no_prefix) {
-		options->a_prefix = options->b_prefix = "";
+		diff_set_noprefix(options);
 	} else if (!diff_mnemonic_prefix) {
-		options->a_prefix = "a/";
-		options->b_prefix = "b/";
+		diff_set_default_prefix(options);
 	}
 
 	options->color_moved = diff_color_moved_default;
 	options->color_moved_ws_handling = diff_color_moved_ws_default;
-
-	prep_parse_options(options);
 }
 
 static const char diff_status_letters[] = {
@@ -4679,6 +4778,31 @@ unsigned diff_filter_bit(char status)
 {
 	prepare_filter_bits();
 	return filter_bit[(int) status];
+}
+
+int diff_check_follow_pathspec(struct pathspec *ps, int die_on_error)
+{
+	unsigned forbidden_magic;
+
+	if (ps->nr != 1) {
+		if (die_on_error)
+			die(_("--follow requires exactly one pathspec"));
+		return 0;
+	}
+
+	forbidden_magic = ps->items[0].magic & ~(PATHSPEC_FROMTOP |
+						 PATHSPEC_LITERAL);
+	if (forbidden_magic) {
+		if (die_on_error) {
+			struct strbuf sb = STRBUF_INIT;
+			pathspec_magic_names(forbidden_magic, &sb);
+			die(_("pathspec magic not supported by --follow: %s"),
+			    sb.buf);
+		}
+		return 0;
+	}
+
+	return 1;
 }
 
 void diff_setup_done(struct diff_options *options)
@@ -4735,6 +4859,10 @@ void diff_setup_done(struct diff_options *options)
 	else
 		options->prefix_length = 0;
 
+	/*
+	 * --name-only, --name-status, --checkdiff, and -s
+	 * turn other output format off.
+	 */
 	if (options->output_format & (DIFF_FORMAT_NAME |
 				      DIFF_FORMAT_NAME_STATUS |
 				      DIFF_FORMAT_CHECKDIFF |
@@ -4788,8 +4916,8 @@ void diff_setup_done(struct diff_options *options)
 
 	options->diff_path_counter = 0;
 
-	if (options->flags.follow_renames && options->pathspec.nr != 1)
-		die(_("--follow requires exactly one pathspec"));
+	if (options->flags.follow_renames)
+		diff_check_follow_pathspec(&options->pathspec, 1);
 
 	if (!options->use_color || external_diff())
 		options->color_moved = 0;
@@ -4799,8 +4927,6 @@ void diff_setup_done(struct diff_options *options)
 			options->filter = ~filter_bit[DIFF_STATUS_FILTER_AON];
 		options->filter &= ~options->filter_not;
 	}
-
-	FREE_AND_NULL(options->parseopts);
 }
 
 int parse_long_opt(const char *opt, const char **argv,
@@ -4868,6 +4994,7 @@ static int diff_opt_stat(const struct option *opt, const char *value, int unset)
 	} else
 		BUG("%s should not get here", opt->long_name);
 
+	options->output_format &= ~DIFF_FORMAT_NO_OUTPUT;
 	options->output_format |= DIFF_FORMAT_DIFFSTAT;
 	options->stat_name_width = name_width;
 	options->stat_graph_width = graph_width;
@@ -4887,6 +5014,7 @@ static int parse_dirstat_opt(struct diff_options *options, const char *params)
 	 * The caller knows a dirstat-related option is given from the command
 	 * line; allow it to say "return this_function();"
 	 */
+	options->output_format &= ~DIFF_FORMAT_NO_OUTPUT;
 	options->output_format |= DIFF_FORMAT_DIRSTAT;
 	return 1;
 }
@@ -4950,7 +5078,7 @@ static int diff_opt_find_object(const struct option *option,
 	struct object_id oid;
 
 	BUG_ON_OPT_NEG(unset);
-	if (get_oid(arg, &oid))
+	if (repo_get_oid(the_repository, arg, &oid))
 		return error(_("unable to resolve '%s'"), arg);
 
 	if (!opt->objfind)
@@ -5086,6 +5214,7 @@ static int diff_opt_compact_summary(const struct option *opt,
 		options->flags.stat_with_summary = 0;
 	} else {
 		options->flags.stat_with_summary = 1;
+		options->output_format &= ~DIFF_FORMAT_NO_OUTPUT;
 		options->output_format |= DIFF_FORMAT_DIFFSTAT;
 	}
 	return 0;
@@ -5095,17 +5224,32 @@ static int diff_opt_diff_algorithm(const struct option *opt,
 				   const char *arg, int unset)
 {
 	struct diff_options *options = opt->value;
-	long value = parse_algorithm_value(arg);
 
 	BUG_ON_OPT_NEG(unset);
-	if (value < 0)
+
+	if (set_diff_algorithm(options, arg))
 		return error(_("option diff-algorithm accepts \"myers\", "
 			       "\"minimal\", \"patience\" and \"histogram\""));
 
-	/* clear out previous settings */
-	DIFF_XDL_CLR(options, NEED_MINIMAL);
-	options->xdl_opts &= ~XDF_DIFF_ALGORITHM_MASK;
-	options->xdl_opts |= value;
+	options->ignore_driver_algorithm = 1;
+
+	return 0;
+}
+
+static int diff_opt_diff_algorithm_no_arg(const struct option *opt,
+				   const char *arg, int unset)
+{
+	struct diff_options *options = opt->value;
+
+	BUG_ON_OPT_NEG(unset);
+	BUG_ON_OPT_ARG(arg);
+
+	if (set_diff_algorithm(options, opt->long_name))
+		BUG("available diff algorithms include \"myers\", "
+			       "\"minimal\", \"patience\" and \"histogram\"");
+
+	options->ignore_driver_algorithm = 1;
+
 	return 0;
 }
 
@@ -5208,8 +5352,18 @@ static int diff_opt_no_prefix(const struct option *opt,
 
 	BUG_ON_OPT_NEG(unset);
 	BUG_ON_OPT_ARG(optarg);
-	options->a_prefix = "";
-	options->b_prefix = "";
+	diff_set_noprefix(options);
+	return 0;
+}
+
+static int diff_opt_default_prefix(const struct option *opt,
+				   const char *optarg, int unset)
+{
+	struct diff_options *options = opt->value;
+
+	BUG_ON_OPT_NEG(unset);
+	BUG_ON_OPT_ARG(optarg);
+	diff_set_default_prefix(options);
 	return 0;
 }
 
@@ -5238,7 +5392,6 @@ static int diff_opt_patience(const struct option *opt,
 
 	BUG_ON_OPT_NEG(unset);
 	BUG_ON_OPT_ARG(arg);
-	options->xdl_opts = DIFF_WITH_ALG(options, PATIENCE_DIFF);
 	/*
 	 * Both --patience and --anchored use PATIENCE_DIFF
 	 * internally, so remove any anchors previously
@@ -5247,7 +5400,9 @@ static int diff_opt_patience(const struct option *opt,
 	for (i = 0; i < options->anchors_nr; i++)
 		free(options->anchors[i]);
 	options->anchors_nr = 0;
-	return 0;
+	options->ignore_driver_algorithm = 1;
+
+	return set_diff_algorithm(options, "patience");
 }
 
 static int diff_opt_ignore_regex(const struct option *opt,
@@ -5397,16 +5552,20 @@ static int diff_opt_rotate_to(const struct option *opt, const char *arg, int uns
 	return 0;
 }
 
-static void prep_parse_options(struct diff_options *options)
+/*
+ * Consider adding new flags to __git_diff_common_options
+ * in contrib/completion/git-completion.bash
+ */
+struct option *add_diff_options(const struct option *opts,
+				struct diff_options *options)
 {
 	struct option parseopts[] = {
 		OPT_GROUP(N_("Diff output format options")),
 		OPT_BITOP('p', "patch", &options->output_format,
 			  N_("generate patch"),
 			  DIFF_FORMAT_PATCH, DIFF_FORMAT_NO_OUTPUT),
-		OPT_BIT_F('s', "no-patch", &options->output_format,
-			  N_("suppress diff output"),
-			  DIFF_FORMAT_NO_OUTPUT, PARSE_OPT_NONEG),
+		OPT_SET_INT('s', "no-patch", &options->output_format,
+			    N_("suppress diff output"), DIFF_FORMAT_NO_OUTPUT),
 		OPT_BITOP('u', NULL, &options->output_format,
 			  N_("generate patch"),
 			  DIFF_FORMAT_PATCH, DIFF_FORMAT_NO_OUTPUT),
@@ -5415,9 +5574,9 @@ static void prep_parse_options(struct diff_options *options)
 			       PARSE_OPT_NONEG | PARSE_OPT_OPTARG, diff_opt_unified),
 		OPT_BOOL('W', "function-context", &options->flags.funccontext,
 			 N_("generate diffs with <n> lines context")),
-		OPT_BIT_F(0, "raw", &options->output_format,
+		OPT_BITOP(0, "raw", &options->output_format,
 			  N_("generate the diff in raw format"),
-			  DIFF_FORMAT_RAW, PARSE_OPT_NONEG),
+			  DIFF_FORMAT_RAW, DIFF_FORMAT_NO_OUTPUT),
 		OPT_BITOP(0, "patch-with-raw", &options->output_format,
 			  N_("synonym for '-p --raw'"),
 			  DIFF_FORMAT_PATCH | DIFF_FORMAT_RAW,
@@ -5426,12 +5585,12 @@ static void prep_parse_options(struct diff_options *options)
 			  N_("synonym for '-p --stat'"),
 			  DIFF_FORMAT_PATCH | DIFF_FORMAT_DIFFSTAT,
 			  DIFF_FORMAT_NO_OUTPUT),
-		OPT_BIT_F(0, "numstat", &options->output_format,
+		OPT_BITOP(0, "numstat", &options->output_format,
 			  N_("machine friendly --stat"),
-			  DIFF_FORMAT_NUMSTAT, PARSE_OPT_NONEG),
-		OPT_BIT_F(0, "shortstat", &options->output_format,
+			  DIFF_FORMAT_NUMSTAT, DIFF_FORMAT_NO_OUTPUT),
+		OPT_BITOP(0, "shortstat", &options->output_format,
 			  N_("output only the last line of --stat"),
-			  DIFF_FORMAT_SHORTSTAT, PARSE_OPT_NONEG),
+			  DIFF_FORMAT_SHORTSTAT, DIFF_FORMAT_NO_OUTPUT),
 		OPT_CALLBACK_F('X', "dirstat", options, N_("<param1,param2>..."),
 			       N_("output the distribution of relative amount of changes for each sub-directory"),
 			       PARSE_OPT_NONEG | PARSE_OPT_OPTARG,
@@ -5447,9 +5606,9 @@ static void prep_parse_options(struct diff_options *options)
 		OPT_BIT_F(0, "check", &options->output_format,
 			  N_("warn if changes introduce conflict markers or whitespace errors"),
 			  DIFF_FORMAT_CHECKDIFF, PARSE_OPT_NONEG),
-		OPT_BIT_F(0, "summary", &options->output_format,
+		OPT_BITOP(0, "summary", &options->output_format,
 			  N_("condensed summary such as creations, renames and mode changes"),
-			  DIFF_FORMAT_SUMMARY, PARSE_OPT_NONEG),
+			  DIFF_FORMAT_SUMMARY, DIFF_FORMAT_NO_OUTPUT),
 		OPT_BIT_F(0, "name-only", &options->output_format,
 			  N_("show only names of changed files"),
 			  DIFF_FORMAT_NAME, PARSE_OPT_NONEG),
@@ -5500,6 +5659,9 @@ static void prep_parse_options(struct diff_options *options)
 		OPT_CALLBACK_F(0, "no-prefix", options, NULL,
 			       N_("do not show any source or destination prefix"),
 			       PARSE_OPT_NONEG | PARSE_OPT_NOARG, diff_opt_no_prefix),
+		OPT_CALLBACK_F(0, "default-prefix", options, NULL,
+			       N_("use default prefixes a/ and b/"),
+			       PARSE_OPT_NONEG | PARSE_OPT_NOARG, diff_opt_default_prefix),
 		OPT_INTEGER_F(0, "inter-hunk-context", &options->interhunkcontext,
 			      N_("show context between diff hunks up to the specified number of lines"),
 			      PARSE_OPT_NONEG),
@@ -5549,9 +5711,10 @@ static void prep_parse_options(struct diff_options *options)
 			    N_("prevent rename/copy detection if the number of rename/copy targets exceeds given limit")),
 
 		OPT_GROUP(N_("Diff algorithm options")),
-		OPT_BIT(0, "minimal", &options->xdl_opts,
-			N_("produce the smallest possible diff"),
-			XDF_NEED_MINIMAL),
+		OPT_CALLBACK_F(0, "minimal", options, NULL,
+			       N_("produce the smallest possible diff"),
+			       PARSE_OPT_NONEG | PARSE_OPT_NOARG,
+			       diff_opt_diff_algorithm_no_arg),
 		OPT_BIT_F('w', "ignore-all-space", &options->xdl_opts,
 			  N_("ignore whitespace when comparing lines"),
 			  XDF_IGNORE_WHITESPACE, PARSE_OPT_NONEG),
@@ -5577,9 +5740,10 @@ static void prep_parse_options(struct diff_options *options)
 			       N_("generate diff using the \"patience diff\" algorithm"),
 			       PARSE_OPT_NONEG | PARSE_OPT_NOARG,
 			       diff_opt_patience),
-		OPT_BITOP(0, "histogram", &options->xdl_opts,
-			  N_("generate diff using the \"histogram diff\" algorithm"),
-			  XDF_HISTOGRAM_DIFF, XDF_DIFF_ALGORITHM_MASK),
+		OPT_CALLBACK_F(0, "histogram", options, NULL,
+			       N_("generate diff using the \"histogram diff\" algorithm"),
+			       PARSE_OPT_NONEG | PARSE_OPT_NOARG,
+			       diff_opt_diff_algorithm_no_arg),
 		OPT_CALLBACK_F(0, "diff-algorithm", options, N_("<algorithm>"),
 			       N_("choose a diff algorithm"),
 			       PARSE_OPT_NONEG, diff_opt_diff_algorithm),
@@ -5667,22 +5831,25 @@ static void prep_parse_options(struct diff_options *options)
 		OPT_END()
 	};
 
-	ALLOC_ARRAY(options->parseopts, ARRAY_SIZE(parseopts));
-	memcpy(options->parseopts, parseopts, sizeof(parseopts));
+	return parse_options_concat(opts, parseopts);
 }
 
 int diff_opt_parse(struct diff_options *options,
 		   const char **av, int ac, const char *prefix)
 {
+	struct option no_options[] = { OPT_END() };
+	struct option *parseopts = add_diff_options(no_options, options);
+
 	if (!prefix)
 		prefix = "";
 
-	ac = parse_options(ac, av, prefix, options->parseopts, NULL,
+	ac = parse_options(ac, av, prefix, parseopts, NULL,
 			   PARSE_OPT_KEEP_DASHDASH |
 			   PARSE_OPT_KEEP_UNKNOWN_OPT |
 			   PARSE_OPT_NO_INTERNAL_HELP |
 			   PARSE_OPT_ONE_SHOT |
 			   PARSE_OPT_STOP_AT_NON_OPTION);
+	free(parseopts);
 
 	return ac;
 }
@@ -5748,6 +5915,13 @@ void diff_free_filepair(struct diff_filepair *p)
 	free_filespec(p->one);
 	free_filespec(p->two);
 	free(p);
+}
+
+void diff_free_queue(struct diff_queue_struct *q)
+{
+	for (int i = 0; i < q->nr; i++)
+		diff_free_filepair(q->queue[i]);
+	free(q->queue);
 }
 
 const char *diff_aligned_abbrev(const struct object_id *oid, int len)
@@ -6063,6 +6237,8 @@ static void flush_one_pair(struct diff_filepair *p, struct diff_options *opt)
 		fprintf(opt->file, "%s", diff_line_prefix(opt));
 		write_name_quoted(name_a, opt->file, opt->line_termination);
 	}
+
+	opt->found_changes = 1;
 }
 
 static void show_file_mode_name(struct diff_options *opt, const char *newdelete, struct diff_filespec *fs)
@@ -6206,7 +6382,7 @@ static void patch_id_add_mode(git_hash_ctx *ctx, unsigned mode)
 }
 
 /* returns 0 upon success, and writes result into oid */
-static int diff_get_patch_id(struct diff_options *options, struct object_id *oid, int diff_header_only, int stable)
+static int diff_get_patch_id(struct diff_options *options, struct object_id *oid, int diff_header_only)
 {
 	struct diff_queue_struct *q = &diff_queued_diff;
 	int i;
@@ -6253,66 +6429,63 @@ static int diff_get_patch_id(struct diff_options *options, struct object_id *oid
 		if (p->one->mode == 0) {
 			patch_id_add_string(&ctx, "newfilemode");
 			patch_id_add_mode(&ctx, p->two->mode);
-			patch_id_add_string(&ctx, "---/dev/null");
-			patch_id_add_string(&ctx, "+++b/");
-			the_hash_algo->update_fn(&ctx, p->two->path, len2);
 		} else if (p->two->mode == 0) {
 			patch_id_add_string(&ctx, "deletedfilemode");
 			patch_id_add_mode(&ctx, p->one->mode);
-			patch_id_add_string(&ctx, "---a/");
-			the_hash_algo->update_fn(&ctx, p->one->path, len1);
-			patch_id_add_string(&ctx, "+++/dev/null");
-		} else {
-			patch_id_add_string(&ctx, "---a/");
-			the_hash_algo->update_fn(&ctx, p->one->path, len1);
-			patch_id_add_string(&ctx, "+++b/");
-			the_hash_algo->update_fn(&ctx, p->two->path, len2);
+		} else if (p->one->mode != p->two->mode) {
+			patch_id_add_string(&ctx, "oldmode");
+			patch_id_add_mode(&ctx, p->one->mode);
+			patch_id_add_string(&ctx, "newmode");
+			patch_id_add_mode(&ctx, p->two->mode);
 		}
 
-		if (diff_header_only)
-			continue;
-
-		if (fill_mmfile(options->repo, &mf1, p->one) < 0 ||
-		    fill_mmfile(options->repo, &mf2, p->two) < 0)
-			return error("unable to read files to diff");
-
-		if (diff_filespec_is_binary(options->repo, p->one) ||
+		if (diff_header_only) {
+			/* don't do anything since we're only populating header info */
+		} else if (diff_filespec_is_binary(options->repo, p->one) ||
 		    diff_filespec_is_binary(options->repo, p->two)) {
 			the_hash_algo->update_fn(&ctx, oid_to_hex(&p->one->oid),
 					the_hash_algo->hexsz);
 			the_hash_algo->update_fn(&ctx, oid_to_hex(&p->two->oid),
 					the_hash_algo->hexsz);
-			continue;
+		} else {
+			if (p->one->mode == 0) {
+				patch_id_add_string(&ctx, "---/dev/null");
+				patch_id_add_string(&ctx, "+++b/");
+				the_hash_algo->update_fn(&ctx, p->two->path, len2);
+			} else if (p->two->mode == 0) {
+				patch_id_add_string(&ctx, "---a/");
+				the_hash_algo->update_fn(&ctx, p->one->path, len1);
+				patch_id_add_string(&ctx, "+++/dev/null");
+			} else {
+				patch_id_add_string(&ctx, "---a/");
+				the_hash_algo->update_fn(&ctx, p->one->path, len1);
+				patch_id_add_string(&ctx, "+++b/");
+				the_hash_algo->update_fn(&ctx, p->two->path, len2);
+			}
+
+			if (fill_mmfile(options->repo, &mf1, p->one) < 0 ||
+			    fill_mmfile(options->repo, &mf2, p->two) < 0)
+				return error("unable to read files to diff");
+			xpp.flags = 0;
+			xecfg.ctxlen = 3;
+			xecfg.flags = XDL_EMIT_NO_HUNK_HDR;
+			if (xdi_diff_outf(&mf1, &mf2, NULL,
+					  patch_id_consume, &data, &xpp, &xecfg))
+				return error("unable to generate patch-id diff for %s",
+					     p->one->path);
 		}
-
-		xpp.flags = 0;
-		xecfg.ctxlen = 3;
-		xecfg.flags = XDL_EMIT_NO_HUNK_HDR;
-		if (xdi_diff_outf(&mf1, &mf2, NULL,
-				  patch_id_consume, &data, &xpp, &xecfg))
-			return error("unable to generate patch-id diff for %s",
-				     p->one->path);
-
-		if (stable)
-			flush_one_hunk(oid, &ctx);
+		flush_one_hunk(oid, &ctx);
 	}
-
-	if (!stable)
-		the_hash_algo->final_oid_fn(oid, &ctx);
 
 	return 0;
 }
 
-int diff_flush_patch_id(struct diff_options *options, struct object_id *oid, int diff_header_only, int stable)
+int diff_flush_patch_id(struct diff_options *options, struct object_id *oid, int diff_header_only)
 {
 	struct diff_queue_struct *q = &diff_queued_diff;
-	int i;
-	int result = diff_get_patch_id(options, oid, diff_header_only, stable);
+	int result = diff_get_patch_id(options, oid, diff_header_only);
 
-	for (i = 0; i < q->nr; i++)
-		diff_free_filepair(q->queue[i]);
-
-	free(q->queue);
+	diff_free_queue(q);
 	DIFF_QUEUE_CLEAR(q);
 
 	return result;
@@ -6487,7 +6660,6 @@ void diff_free(struct diff_options *options)
 	diff_free_file(options);
 	diff_free_ignore_regex(options);
 	clear_pathspec(&options->pathspec);
-	FREE_AND_NULL(options->parseopts);
 }
 
 void diff_flush(struct diff_options *options)
@@ -6545,6 +6717,21 @@ void diff_flush(struct diff_options *options)
 		separator++;
 	}
 
+	if (output_format & DIFF_FORMAT_PATCH) {
+		if (separator) {
+			emit_diff_symbol(options, DIFF_SYMBOL_SEPARATOR, NULL, 0, 0);
+			if (options->stat_sep)
+				/* attach patch instead of inline */
+				emit_diff_symbol(options, DIFF_SYMBOL_STAT_SEP,
+						 NULL, 0, 0);
+		}
+
+		diff_flush_patch_all_file_pairs(options);
+	}
+
+	if (output_format & DIFF_FORMAT_CALLBACK)
+		options->format_callback(q, options, options->format_callback_data);
+
 	if (output_format & DIFF_FORMAT_NO_OUTPUT &&
 	    options->flags.exit_with_status &&
 	    options->flags.diff_from_contents) {
@@ -6566,25 +6753,8 @@ void diff_flush(struct diff_options *options)
 		}
 	}
 
-	if (output_format & DIFF_FORMAT_PATCH) {
-		if (separator) {
-			emit_diff_symbol(options, DIFF_SYMBOL_SEPARATOR, NULL, 0, 0);
-			if (options->stat_sep)
-				/* attach patch instead of inline */
-				emit_diff_symbol(options, DIFF_SYMBOL_STAT_SEP,
-						 NULL, 0, 0);
-		}
-
-		diff_flush_patch_all_file_pairs(options);
-	}
-
-	if (output_format & DIFF_FORMAT_CALLBACK)
-		options->format_callback(q, options, options->format_callback_data);
-
-	for (i = 0; i < q->nr; i++)
-		diff_free_filepair(q->queue[i]);
 free_queue:
-	free(q->queue);
+	diff_free_queue(q);
 	DIFF_QUEUE_CLEAR(q);
 	diff_free(options);
 
@@ -6783,6 +6953,13 @@ void diff_queued_diff_prefetch(void *repository)
 	oid_array_clear(&to_fetch);
 }
 
+void init_diffstat_widths(struct diff_options *options)
+{
+	options->stat_width = -1;        /* use full terminal width */
+	options->stat_name_width = -1;   /* respect diff.statNameWidth config */
+	options->stat_graph_width = -1;  /* respect diff.statGraphWidth config */
+}
+
 void diffcore_std(struct diff_options *options)
 {
 	int output_formats_to_prefetch = DIFF_FORMAT_DIFFSTAT |
@@ -6799,7 +6976,7 @@ void diffcore_std(struct diff_options *options)
 	 * If no prefetching occurs, diffcore_rename() will prefetch if it
 	 * decides that it needs inexact rename detection.
 	 */
-	if (options->repo == the_repository && has_promisor_remote() &&
+	if (options->repo == the_repository && repo_has_promisor_remote(the_repository) &&
 	    (options->output_format & output_formats_to_prefetch ||
 	     options->pickaxe_opts & DIFF_PICKAXE_KINDS_MASK))
 		diff_queued_diff_prefetch(options->repo);
@@ -6836,16 +7013,14 @@ void diffcore_std(struct diff_options *options)
 	options->found_follow = 0;
 }
 
-int diff_result_code(struct diff_options *opt, int status)
+int diff_result_code(struct diff_options *opt)
 {
 	int result = 0;
 
 	diff_warn_rename_limit("diff.renameLimit",
 			       opt->needed_rename_limit,
 			       opt->degraded_cc_to_c);
-	if (!opt->flags.exit_with_status &&
-	    !(opt->output_format & DIFF_FORMAT_CHECKDIFF))
-		return status;
+
 	if (opt->flags.exit_with_status &&
 	    opt->flags.has_changes)
 		result |= 01;
@@ -6892,6 +7067,7 @@ void compute_diffstat(struct diff_options *options,
 		if (check_pair_status(p))
 			diff_flush_stat(p, options, diffstat);
 	}
+	options->found_changes = !!diffstat->nr;
 }
 
 void diff_addremove(struct diff_options *options,
@@ -7013,7 +7189,7 @@ static char *run_textconv(struct repository *r,
 	struct strbuf buf = STRBUF_INIT;
 	int err = 0;
 
-	temp = prepare_temp_file(r, spec->path, spec);
+	temp = prepare_temp_file(r, spec);
 	strvec_push(&child.args, pgm);
 	strvec_push(&child.args, temp->name);
 

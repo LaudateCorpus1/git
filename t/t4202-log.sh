@@ -187,6 +187,21 @@ test_expect_success 'git config log.follow does not die with no paths' '
 	git log --
 '
 
+test_expect_success 'git log --follow rejects unsupported pathspec magic' '
+	test_must_fail git log --follow ":(top,glob,icase)ichi" 2>stderr &&
+	# check full error message; we want to be sure we mention both
+	# of the rejected types (glob,icase), but not the allowed one (top)
+	echo "fatal: pathspec magic not supported by --follow: ${SQ}glob${SQ}, ${SQ}icase${SQ}" >expect &&
+	test_cmp expect stderr
+'
+
+test_expect_success 'log.follow disabled with unsupported pathspec magic' '
+	test_config log.follow true &&
+	git log --format=%s ":(glob,icase)ichi" >actual &&
+	echo third >expect &&
+	test_cmp expect actual
+'
+
 test_expect_success 'git config log.follow is overridden by --no-follow' '
 	test_config log.follow true &&
 	git log --no-follow --pretty="format:%s" ichi >actual &&
@@ -248,6 +263,15 @@ test_expect_success 'log --grep' '
 	git log -1 --pretty="tformat:%s" --grep=sec >actual &&
 	test_cmp expect actual
 '
+
+for noop_opt in --invert-grep --all-match
+do
+	test_expect_success "log $noop_opt without --grep is a NOOP" '
+		git log >expect &&
+		git log $noop_opt >actual &&
+		test_cmp expect actual
+	'
+done
 
 cat > expect << EOF
 second
@@ -824,6 +848,21 @@ test_expect_success 'log.decorate configuration' '
 	git log --pretty=raw >actual &&
 	test_cmp expect.raw actual
 
+'
+
+test_expect_success 'parse log.excludeDecoration with no value' '
+	cp .git/config .git/config.orig &&
+	test_when_finished mv .git/config.orig .git/config &&
+
+	cat >>.git/config <<-\EOF &&
+	[log]
+		excludeDecoration
+	EOF
+	cat >expect <<-\EOF &&
+	error: missing value for '\''log.excludeDecoration'\''
+	EOF
+	git log --decorate=short 2>actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'decorate-refs with glob' '
@@ -1845,7 +1884,7 @@ test_expect_success '--no-graph does not unset --parents' '
 
 test_expect_success '--reverse and --graph conflict' '
 	test_must_fail git log --reverse --graph 2>stderr &&
-	test_i18ngrep "cannot be used together" stderr
+	test_grep "cannot be used together" stderr
 '
 
 test_expect_success '--reverse --graph --no-graph works' '
@@ -1856,7 +1895,7 @@ test_expect_success '--reverse --graph --no-graph works' '
 
 test_expect_success '--show-linear-break and --graph conflict' '
 	test_must_fail git log --show-linear-break --graph 2>stderr &&
-	test_i18ngrep "cannot be used together" stderr
+	test_grep "cannot be used together" stderr
 '
 
 test_expect_success '--show-linear-break --graph --no-graph works' '
@@ -1867,7 +1906,7 @@ test_expect_success '--show-linear-break --graph --no-graph works' '
 
 test_expect_success '--no-walk and --graph conflict' '
 	test_must_fail git log --no-walk --graph 2>stderr &&
-	test_i18ngrep "cannot be used together" stderr
+	test_grep "cannot be used together" stderr
 '
 
 test_expect_success '--no-walk --graph --no-graph works' '
@@ -1878,8 +1917,8 @@ test_expect_success '--no-walk --graph --no-graph works' '
 
 test_expect_success '--walk-reflogs and --graph conflict' '
 	test_must_fail git log --walk-reflogs --graph 2>stderr &&
-	(test_i18ngrep "cannot combine" stderr ||
-		test_i18ngrep "cannot be used together" stderr)
+	(test_grep "cannot combine" stderr ||
+		test_grep "cannot be used together" stderr)
 '
 
 test_expect_success '--walk-reflogs --graph --no-graph works' '
@@ -2213,7 +2252,7 @@ test_expect_success 'log on empty repo fails' '
 	git init empty &&
 	test_when_finished "rm -rf empty" &&
 	test_must_fail git -C empty log 2>stderr &&
-	test_i18ngrep does.not.have.any.commits stderr
+	test_grep does.not.have.any.commits stderr
 '
 
 test_expect_success REFFILES 'log diagnoses bogus HEAD hash' '
@@ -2221,16 +2260,16 @@ test_expect_success REFFILES 'log diagnoses bogus HEAD hash' '
 	test_when_finished "rm -rf empty" &&
 	echo 1234abcd >empty/.git/refs/heads/main &&
 	test_must_fail git -C empty log 2>stderr &&
-	test_i18ngrep broken stderr
+	test_grep broken stderr
 '
 
 test_expect_success REFFILES 'log diagnoses bogus HEAD symref' '
 	git init empty &&
-	echo "ref: refs/heads/invalid.lock" > empty/.git/HEAD &&
+	test-tool -C empty ref-store main create-symref HEAD refs/heads/invalid.lock &&
 	test_must_fail git -C empty log 2>stderr &&
-	test_i18ngrep broken stderr &&
+	test_grep broken stderr &&
 	test_must_fail git -C empty log --default totally-bogus 2>stderr &&
-	test_i18ngrep broken stderr
+	test_grep broken stderr
 '
 
 test_expect_success 'log does not default to HEAD when rev input is given' '
@@ -2319,10 +2358,10 @@ test_expect_success 'log --decorate does not include things outside filter' '
 '
 
 test_expect_success 'log --end-of-options' '
-       git update-ref refs/heads/--source HEAD &&
-       git log --end-of-options --source >actual &&
-       git log >expect &&
-       test_cmp expect actual
+	git update-ref refs/heads/--source HEAD &&
+	git log --end-of-options --source >actual &&
+	git log >expect &&
+	test_cmp expect actual
 '
 
 test_expect_success 'set up commits with different authors' '

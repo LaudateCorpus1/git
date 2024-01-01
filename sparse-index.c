@@ -1,4 +1,8 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "environment.h"
+#include "gettext.h"
+#include "name-hash.h"
+#include "read-cache-ll.h"
 #include "repository.h"
 #include "sparse-index.h"
 #include "tree.h"
@@ -7,7 +11,7 @@
 #include "cache-tree.h"
 #include "config.h"
 #include "dir.h"
-#include "fsmonitor.h"
+#include "fsmonitor-ll.h"
 
 struct modify_index_context {
 	struct index_state *write;
@@ -127,9 +131,6 @@ int is_sparse_index_allowed(struct index_state *istate, int flags)
 {
 	if (!core_apply_sparse_checkout || !core_sparse_checkout_cone)
 		return 0;
-
-	if (!istate->repo)
-		istate->repo = the_repository;
 
 	if (!(flags & SPARSE_INDEX_MEMORY_ONLY)) {
 		int test_env;
@@ -299,7 +300,7 @@ void expand_index(struct index_state *istate, struct pattern_list *pl)
 	 * If the index is already full, then keep it full. We will convert
 	 * it to a sparse index on write, if possible.
 	 */
-	if (!istate || istate->sparse_index == INDEX_EXPANDED)
+	if (istate->sparse_index == INDEX_EXPANDED)
 		return;
 
 	/*
@@ -326,9 +327,6 @@ void expand_index(struct index_state *istate, struct pattern_list *pl)
 		if (cache_tree_update(istate, 0))
 			pl = NULL;
 	}
-
-	if (!istate->repo)
-		istate->repo = the_repository;
 
 	/*
 	 * A NULL pattern set indicates we are expanding a full index, so
@@ -393,7 +391,7 @@ void expand_index(struct index_state *istate, struct pattern_list *pl)
 		strbuf_setlen(&base, 0);
 		strbuf_add(&base, ce->name, strlen(ce->name));
 
-		read_tree_at(istate->repo, tree, &base, &ps,
+		read_tree_at(istate->repo, tree, &base, 0, &ps,
 			     add_path_to_index, &ctx);
 
 		/* free directory entries. full entries are re-used */
@@ -424,6 +422,8 @@ void expand_index(struct index_state *istate, struct pattern_list *pl)
 
 void ensure_full_index(struct index_state *istate)
 {
+	if (!istate)
+		BUG("ensure_full_index() must get an index!");
 	expand_index(istate, NULL);
 }
 
@@ -493,24 +493,42 @@ void clear_skip_worktree_from_present_files(struct index_state *istate)
 	int dir_found = 1;
 
 	int i;
+	int path_count[2] = {0, 0};
+	int restarted = 0;
 
 	if (!core_apply_sparse_checkout ||
 	    sparse_expect_files_outside_of_patterns)
 		return;
 
+	trace2_region_enter("index", "clear_skip_worktree_from_present_files",
+			    istate->repo);
 restart:
 	for (i = 0; i < istate->cache_nr; i++) {
 		struct cache_entry *ce = istate->cache[i];
 
-		if (ce_skip_worktree(ce) &&
-		    path_found(ce->name, &last_dirname, &dir_len, &dir_found)) {
-			if (S_ISSPARSEDIR(ce->ce_mode)) {
-				ensure_full_index(istate);
-				goto restart;
+		if (ce_skip_worktree(ce)) {
+			path_count[restarted]++;
+			if (path_found(ce->name, &last_dirname, &dir_len, &dir_found)) {
+				if (S_ISSPARSEDIR(ce->ce_mode)) {
+					if (restarted)
+						BUG("ensure-full-index did not fully flatten?");
+					ensure_full_index(istate);
+					restarted = 1;
+					goto restart;
+				}
+				ce->ce_flags &= ~CE_SKIP_WORKTREE;
 			}
-			ce->ce_flags &= ~CE_SKIP_WORKTREE;
 		}
 	}
+
+	if (path_count[0])
+		trace2_data_intmax("index", istate->repo,
+				   "sparse_path_count", path_count[0]);
+	if (restarted)
+		trace2_data_intmax("index", istate->repo,
+				   "sparse_path_count_full", path_count[1]);
+	trace2_region_leave("index", "clear_skip_worktree_from_present_files",
+			    istate->repo);
 }
 
 /*
@@ -529,11 +547,8 @@ void expand_to_path(struct index_state *istate,
 	if (in_expand_to_path)
 		return;
 
-	if (!istate || !istate->sparse_index)
+	if (!istate->sparse_index)
 		return;
-
-	if (!istate->repo)
-		istate->repo = the_repository;
 
 	in_expand_to_path = 1;
 

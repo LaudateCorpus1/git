@@ -1,6 +1,7 @@
-#include "cache.h"
-#include "config.h"
+#include "git-compat-util.h"
+#include "parse.h"
 #include "run-command.h"
+#include "write-or-die.h"
 
 /*
  * Some cases use stdio, but want to flush after the write
@@ -23,6 +24,7 @@ void maybe_flush_or_die(FILE *f, const char *desc)
 
 	if (f == stdout) {
 		if (skip_stdout_flush < 0) {
+			/* NEEDSWORK: make this a normal Boolean */
 			cp = getenv("GIT_FLUSH");
 			if (cp)
 				skip_stdout_flush = (atoi(cp) == 0);

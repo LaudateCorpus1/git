@@ -5,10 +5,13 @@
  * See COPYING for licensing conditions
  */
 
-#include "cache.h"
+#include "git-compat-util.h"
 #include "config.h"
 #include "color.h"
 #include "builtin.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "repository.h"
 #include "commit.h"
 #include "diff.h"
@@ -24,15 +27,27 @@
 #include "line-log.h"
 #include "dir.h"
 #include "progress.h"
-#include "object-store.h"
+#include "object-name.h"
+#include "object-store-ll.h"
+#include "pager.h"
 #include "blame.h"
 #include "refs.h"
+#include "setup.h"
 #include "tag.h"
+#include "write-or-die.h"
 
 static char blame_usage[] = N_("git blame [<options>] [<rev-opts>] [<rev>] [--] <file>");
+static char annotate_usage[] = N_("git annotate [<options>] [<rev-opts>] [<rev>] [--] <file>");
 
 static const char *blame_opt_usage[] = {
 	blame_usage,
+	"",
+	N_("<rev-opts> are documented in git-rev-list(1)"),
+	NULL
+};
+
+static const char *annotate_opt_usage[] = {
+	annotate_usage,
 	"",
 	N_("<rev-opts> are documented in git-rev-list(1)"),
 	NULL
@@ -191,13 +206,13 @@ static void get_commit_info(struct commit *commit,
 	const char *message;
 
 	encoding = get_log_output_encoding();
-	message = logmsg_reencode(commit, NULL, encoding);
+	message = repo_logmsg_reencode(the_repository, commit, NULL, encoding);
 	get_ac_line(message, "\nauthor ",
 		    &ret->author, &ret->author_mail,
 		    &ret->author_time, &ret->author_tz);
 
 	if (!detailed) {
-		unuse_commit_buffer(commit, message);
+		repo_unuse_commit_buffer(the_repository, commit, message);
 		return;
 	}
 
@@ -211,7 +226,7 @@ static void get_commit_info(struct commit *commit,
 	else
 		strbuf_addf(&ret->summary, "(%s)", oid_to_hex(&commit->object.oid));
 
-	unuse_commit_buffer(commit, message);
+	repo_unuse_commit_buffer(the_repository, commit, message);
 }
 
 /*
@@ -593,8 +608,9 @@ static int read_ancestry(const char *graft_file)
 
 static int update_auto_abbrev(int auto_abbrev, struct blame_origin *suspect)
 {
-	const char *uniq = find_unique_abbrev(&suspect->commit->object.oid,
-					      auto_abbrev);
+	const char *uniq = repo_find_unique_abbrev(the_repository,
+						   &suspect->commit->object.oid,
+						   auto_abbrev);
 	int len = strlen(uniq);
 	if (auto_abbrev < len)
 		return len;
@@ -677,7 +693,8 @@ static const char *add_prefix(const char *prefix, const char *path)
 	return prefix_path(prefix, prefix ? strlen(prefix) : 0, path);
 }
 
-static int git_blame_config(const char *var, const char *value, void *cb)
+static int git_blame_config(const char *var, const char *value,
+			    const struct config_context *ctx, void *cb)
 {
 	if (!strcmp(var, "blame.showroot")) {
 		show_root = git_config_bool(var, value);
@@ -731,6 +748,8 @@ static int git_blame_config(const char *var, const char *value, void *cb)
 	}
 
 	if (!strcmp(var, "blame.coloring")) {
+		if (!value)
+			return config_error_nonbool(var);
 		if (!strcmp(value, "repeatedLines")) {
 			coloring_mode |= OUTPUT_COLOR_LINE;
 		} else if (!strcmp(value, "highlightRecent")) {
@@ -750,7 +769,7 @@ static int git_blame_config(const char *var, const char *value, void *cb)
 	if (userdiff_config(var, value) < 0)
 		return -1;
 
-	return git_default_config(var, value, cb);
+	return git_default_config(var, value, ctx, cb);
 }
 
 static int blame_copy_callback(const struct option *option, const char *arg, int unset)
@@ -794,7 +813,7 @@ static int is_a_rev(const char *name)
 {
 	struct object_id oid;
 
-	if (get_oid(name, &oid))
+	if (repo_get_oid(the_repository, name, &oid))
 		return 0;
 	return OBJ_NONE < oid_object_info(the_repository, &oid, NULL);
 }
@@ -837,7 +856,7 @@ static void build_ignorelist(struct blame_scoreboard *sb,
 						    peel_to_commit_oid, sb);
 	}
 	for_each_string_list_item(i, ignore_rev_list) {
-		if (get_oid_committish(i->string, &oid) ||
+		if (repo_get_oid_committish(the_repository, i->string, &oid) ||
 		    peel_to_commit_oid(&oid, sb))
 			die(_("cannot find revision %s to ignore"), i->string);
 		oidset_insert(&sb->ignore_list, &oid);
@@ -899,6 +918,8 @@ int cmd_blame(int argc, const char **argv, const char *prefix)
 	long anchor;
 	const int hexsz = the_hash_algo->hexsz;
 	long num_lines = 0;
+	const char *str_usage = cmd_is_annotate ? annotate_usage : blame_usage;
+	const char **opt_usage = cmd_is_annotate ? annotate_opt_usage : blame_opt_usage;
 
 	setup_default_color_by_age();
 	git_config(git_blame_config, &output_option);
@@ -914,7 +935,7 @@ int cmd_blame(int argc, const char **argv, const char *prefix)
 	parse_options_start(&ctx, argc, argv, prefix, options,
 			    PARSE_OPT_KEEP_DASHDASH | PARSE_OPT_KEEP_ARGV0);
 	for (;;) {
-		switch (parse_options_step(&ctx, options, blame_opt_usage)) {
+		switch (parse_options_step(&ctx, options, opt_usage)) {
 		case PARSE_OPT_NON_OPTION:
 		case PARSE_OPT_UNKNOWN:
 			break;
@@ -934,7 +955,7 @@ int cmd_blame(int argc, const char **argv, const char *prefix)
 			ctx.argv[0] = "--children";
 			reverse = 1;
 		}
-		parse_revision_opt(&revs, &ctx, options, blame_opt_usage);
+		parse_revision_opt(&revs, &ctx, options, opt_usage);
 	}
 parse_done:
 	revision_opts_finish(&revs);
@@ -1040,7 +1061,7 @@ parse_done:
 		switch (argc - dashdash_pos - 1) {
 		case 2: /* (1b) */
 			if (argc != 4)
-				usage_with_options(blame_opt_usage, options);
+				usage_with_options(opt_usage, options);
 			/* reorder for the new way: <rev> -- <path> */
 			argv[1] = argv[3];
 			argv[3] = argv[2];
@@ -1051,11 +1072,11 @@ parse_done:
 			argv[argc] = NULL;
 			break;
 		default:
-			usage_with_options(blame_opt_usage, options);
+			usage_with_options(opt_usage, options);
 		}
 	} else {
 		if (argc < 2)
-			usage_with_options(blame_opt_usage, options);
+			usage_with_options(opt_usage, options);
 		if (argc == 3 && is_a_rev(argv[argc - 1])) { /* (2b) */
 			path = add_prefix(prefix, argv[1]);
 			argv[1] = argv[2];
@@ -1113,7 +1134,7 @@ parse_done:
 				    nth_line_cb, &sb, lno, anchor,
 				    &bottom, &top, sb.path,
 				    the_repository->index))
-			usage(blame_usage);
+			usage(str_usage);
 		if ((!lno && (top || bottom)) || lno < bottom)
 			die(Q_("file %s has only %lu line",
 			       "file %s has only %lu lines",

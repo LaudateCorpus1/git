@@ -49,7 +49,7 @@ test_expect_success 'convert shallow clone to partial clone' '
 	test_cmp_config -C client 1 core.repositoryformatversion
 '
 
-test_expect_success SHA1 'convert to partial clone with noop extension' '
+test_expect_success SHA1,REFFILES 'convert to partial clone with noop extension' '
 	rm -fr server client &&
 	test_create_repo server &&
 	test_commit -C server my_commit 1 &&
@@ -60,7 +60,7 @@ test_expect_success SHA1 'convert to partial clone with noop extension' '
 	git -C client fetch --unshallow --filter="blob:none"
 '
 
-test_expect_success SHA1 'converting to partial clone fails with unrecognized extension' '
+test_expect_success SHA1,REFFILES 'converting to partial clone fails with unrecognized extension' '
 	rm -fr server client &&
 	test_create_repo server &&
 	test_commit -C server my_commit 1 &&
@@ -213,6 +213,20 @@ test_expect_success 'fetching of missing objects' '
 	IDX=$(sed "s/promisor$/idx/" promisorlist) &&
 	git verify-pack --verbose "$IDX" >out &&
 	grep "$HASH" out
+'
+
+test_expect_success 'fetching of a promised object that promisor remote no longer has' '
+	rm -f err &&
+	test_create_repo unreliable-server &&
+	git -C unreliable-server config uploadpack.allowanysha1inwant 1 &&
+	git -C unreliable-server config uploadpack.allowfilter 1 &&
+	test_commit -C unreliable-server foo &&
+
+	git clone --filter=blob:none --no-checkout "file://$(pwd)/unreliable-server" unreliable-client &&
+
+	rm -rf unreliable-server/.git/objects/* &&
+	test_must_fail git -C unreliable-client checkout HEAD 2>err &&
+	grep "could not fetch.*from promisor remote" err
 '
 
 test_expect_success 'fetching of missing objects works with ref-in-want enabled' '

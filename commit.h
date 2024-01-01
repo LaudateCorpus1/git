@@ -2,13 +2,10 @@
 #define COMMIT_H
 
 #include "object.h"
-#include "tree.h"
-#include "strbuf.h"
-#include "decorate.h"
-#include "gpg-interface.h"
-#include "string-list.h"
-#include "pretty.h"
-#include "commit-slab.h"
+
+struct signature_check;
+struct strbuf;
+struct tree;
 
 #define COMMIT_NOT_FROM_GRAPH 0xFFFFFFFF
 #define GENERATION_NUMBER_INFINITY ((1ULL << 63) - 1)
@@ -64,6 +61,19 @@ enum decoration_type {
 void add_name_decoration(enum decoration_type type, const char *name, struct object *obj);
 const struct name_decoration *get_name_decoration(const struct object *obj);
 
+/*
+ * Look up commit named by "oid" respecting replacement objects.
+ * Returns NULL if "oid" is not a commit or does not exist.
+ */
+struct commit *lookup_commit_object(struct repository *r, const struct object_id *oid);
+
+/*
+ * Look up commit named by "oid" without replacement objects or
+ * checking for object existence. Returns the requested commit if it
+ * is found in the object cache, NULL if "oid" is in the object cache
+ * but is not a commit and a newly allocated unparsed commit object if
+ * "oid" is not in the object cache.
+ */
 struct commit *lookup_commit(struct repository *r, const struct object_id *oid);
 struct commit *lookup_commit_reference(struct repository *r,
 				       const struct object_id *oid);
@@ -96,11 +106,6 @@ static inline int repo_parse_commit_no_graph(struct repository *r,
 	return repo_parse_commit_internal(r, commit, 0, 0);
 }
 
-#ifndef NO_THE_REPOSITORY_COMPATIBILITY_MACROS
-#define parse_commit_internal(item, quiet, use) repo_parse_commit_internal(the_repository, item, quiet, use)
-#define parse_commit(item) repo_parse_commit(the_repository, item)
-#endif
-
 void parse_commit_or_die(struct commit *item);
 
 struct buffer_slab;
@@ -122,27 +127,21 @@ const void *get_cached_commit_buffer(struct repository *, const struct commit *,
 /*
  * Get the commit's object contents, either from cache or by reading the object
  * from disk. The resulting memory should not be modified, and must be given
- * to unuse_commit_buffer when the caller is done.
+ * to repo_unuse_commit_buffer when the caller is done.
  */
 const void *repo_get_commit_buffer(struct repository *r,
 				   const struct commit *,
 				   unsigned long *size);
-#ifndef NO_THE_REPOSITORY_COMPATIBILITY_MACROS
-#define get_commit_buffer(c, s) repo_get_commit_buffer(the_repository, c, s)
-#endif
 
 /*
  * Tell the commit subsystem that we are done with a particular commit buffer.
  * The commit and buffer should be the input and return value, respectively,
- * from an earlier call to get_commit_buffer.  The buffer may or may not be
+ * from an earlier call to repo_get_commit_buffer.  The buffer may or may not be
  * freed by this call; callers should not access the memory afterwards.
  */
 void repo_unuse_commit_buffer(struct repository *r,
 			      const struct commit *,
 			      const void *buffer);
-#ifndef NO_THE_REPOSITORY_COMPATIBILITY_MACROS
-#define unuse_commit_buffer(c, b) repo_unuse_commit_buffer(the_repository, c, b)
-#endif
 
 /*
  * Free any cached object buffer associated with the commit.
@@ -150,7 +149,6 @@ void repo_unuse_commit_buffer(struct repository *r,
 void free_commit_buffer(struct parsed_object_pool *pool, struct commit *);
 
 struct tree *repo_get_commit_tree(struct repository *, const struct commit *);
-#define get_commit_tree(c) repo_get_commit_tree(the_repository, c)
 struct object_id *get_commit_tree_oid(const struct commit *);
 
 /*
@@ -192,17 +190,10 @@ void free_commit_list(struct commit_list *list);
 
 struct rev_info; /* in revision.h, it circularly uses enum cmit_fmt */
 
-int has_non_ascii(const char *text);
-const char *logmsg_reencode(const struct commit *commit,
-			    char **commit_encoding,
-			    const char *output_encoding);
 const char *repo_logmsg_reencode(struct repository *r,
 				 const struct commit *commit,
 				 char **commit_encoding,
 				 const char *output_encoding);
-#ifndef NO_THE_REPOSITORY_COMPATIBILITY_MACROS
-#define logmsg_reencode(c, enc, out) repo_logmsg_reencode(the_repository, c, enc, out)
-#endif
 
 const char *skip_blank_lines(const char *msg);
 
@@ -261,8 +252,6 @@ struct ref;
 int for_each_commit_graft(each_commit_graft_fn, void *);
 
 int interactive_add(const char **argv, const char *prefix, int patch);
-int run_add_interactive(const char *revision, const char *patch_mode,
-			const struct pathspec *pathspec);
 
 struct commit_extra_header {
 	struct commit_extra_header *next;

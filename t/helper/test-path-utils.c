@@ -1,6 +1,11 @@
 #include "test-tool.h"
-#include "cache.h"
+#include "abspath.h"
+#include "environment.h"
+#include "path.h"
+#include "read-cache-ll.h"
+#include "setup.h"
 #include "string-list.h"
+#include "trace.h"
 #include "utf8.h"
 
 /*
@@ -8,7 +13,8 @@
  * GIT_CEILING_DIRECTORIES.  If the path is unusable for some reason,
  * die with an explanation.
  */
-static int normalize_ceiling_entry(struct string_list_item *item, void *unused)
+static int normalize_ceiling_entry(struct string_list_item *item,
+				   void *data UNUSED)
 {
 	char *ceil = item->string;
 

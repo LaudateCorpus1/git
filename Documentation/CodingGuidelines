@@ -1,5 +1,5 @@
-Like other projects, we also have some guidelines to keep to the
-code.  For Git in general, a few rough rules are:
+Like other projects, we also have some guidelines for our code.  For
+Git in general, a few rough rules are:
 
  - Most importantly, we never say "It's in POSIX; we'll happily
    ignore your needs should your system not conform to it."
@@ -24,7 +24,7 @@ code.  For Git in general, a few rough rules are:
 
    "Once it _is_ in the tree, it's not really worth the patch noise to
    go and fix it up."
-   Cf. http://lkml.iu.edu/hypermail/linux/kernel/1001.3/01069.html
+   Cf. https://lore.kernel.org/all/20100126160632.3bdbe172.akpm@linux-foundation.org/
 
  - Log messages to explain your changes are as important as the
    changes themselves.  Clearly written code and in-code comments
@@ -40,7 +40,7 @@ As for more concrete guidelines, just imitate the existing code
 contributing to). It is always preferable to match the _local_
 convention. New code added to Git suite is expected to match
 the overall style of existing code. Modifications to existing
-code is expected to match the style the surrounding code already
+code are expected to match the style the surrounding code already
 uses (even if it doesn't match the overall style of existing code).
 
 But if you must have a list of rules, here are some language
@@ -162,8 +162,6 @@ For shell scripts specifically (not exhaustive):
 
    - We do not use \{m,n\};
 
-   - We do not use -E;
-
    - We do not use ? or + (which are \{0,1\} and \{1,\}
      respectively in BRE) but that goes without saying as these
      are ERE elements not BRE (note that \? and \+ are not even part
@@ -190,6 +188,10 @@ For shell scripts specifically (not exhaustive):
    hopefully nobody starts using "local" before they are reimplemented
    in C ;-)
 
+ - Use octal escape sequences (e.g. "\302\242"), not hexadecimal (e.g.
+   "\xc2\xa2") in printf format strings, since hexadecimal escape
+   sequences are not portable.
+
 
 For C programs:
 
@@ -204,10 +206,19 @@ For C programs:
    by e.g. "echo DEVELOPER=1 >>config.mak".
 
  - We try to support a wide range of C compilers to compile Git with,
-   including old ones.  You should not use features from newer C
+   including old ones.  As of Git v2.35.0 Git requires C99 (we check
+   "__STDC_VERSION__"). You should not use features from a newer C
    standard, even if your compiler groks them.
 
-   There are a few exceptions to this guideline:
+   New C99 features have been phased in gradually, if something's new
+   in C99 but not used yet don't assume that it's safe to use, some
+   compilers we target have only partial support for it. These are
+   considered safe to use:
+
+   . since around 2007 with 2b6854c863a, we have been using
+     initializer elements which are not computable at load time. E.g.:
+
+	const char *args[] = {"constant", variable, NULL};
 
    . since early 2012 with e1327023ea, we have been using an enum
      definition whose last element is followed by a comma.  This, like
@@ -223,17 +234,23 @@ For C programs:
    . since early 2021 with 765dc168882, we have been using variadic
      macros, mostly for printf-like trace and debug macros.
 
-   These used to be forbidden, but we have not heard any breakage
-   report, and they are assumed to be safe.
+   . since late 2021 with 44ba10d6, we have had variables declared in
+     the for loop "for (int i = 0; i < 10; i++)".
+
+   New C99 features that we cannot use yet:
+
+   . %z and %zu as a printf() argument for a size_t (the %z being for
+     the POSIX-specific ssize_t). Instead you should use
+     printf("%"PRIuMAX, (uintmax_t)v).  These days the MSVC version we
+     rely on supports %z, but the C library used by MinGW does not.
+
+   . Shorthand like ".a.b = *c" in struct initializations is known to
+     trip up an older IBM XLC version, use ".a = { .b = *c }" instead.
+     See the 33665d98 (reftable: make assignments portable to AIX xlc
+     v12.01, 2022-03-28).
 
  - Variables have to be declared at the beginning of the block, before
    the first statement (i.e. -Wdeclaration-after-statement).
-
- - Declaring a variable in the for loop "for (int i = 0; i < 10; i++)"
-   is still not allowed in this codebase.  We are in the process of
-   allowing it by waiting to see that 44ba10d6 (revision: use C99
-   declaration of variable in for() loop, 2021-11-14) does not get
-   complaints.  Let's revisit this around November 2022.
 
  - NULL pointers shall be written as NULL, not as 0.
 
@@ -429,8 +446,12 @@ For C programs:
    detail.
 
  - The first #include in C files, except in platform specific compat/
-   implementations, must be either "git-compat-util.h", "cache.h" or
-   "builtin.h".  You do not have to include more than one of these.
+   implementations and sha1dc/, must be either "git-compat-util.h" or
+   one of the approved headers that includes it first for you.  (The
+   approved headers currently include "builtin.h",
+   "t/helper/test-tool.h", "xdiff/xinclude.h", or
+   "reftable/system.h").  You do not have to include more than one of
+   these.
 
  - A C file must directly include the header files that declare the
    functions and the types it uses, except for the functions and types
@@ -469,7 +490,7 @@ For Perl programs:
 
  - Most of the C guidelines above apply.
 
- - We try to support Perl 5.8 and later ("use Perl 5.008").
+ - We try to support Perl 5.8.1 and later ("use Perl 5.008001").
 
  - use strict and use warnings are strongly preferred.
 
@@ -497,7 +518,7 @@ For Perl programs:
 
 For Python scripts:
 
- - We follow PEP-8 (http://www.python.org/dev/peps/pep-0008/).
+ - We follow PEP-8 (https://peps.python.org/pep-0008/).
 
  - As a minimum, we aim to be compatible with Python 2.7.
 
@@ -650,8 +671,8 @@ Writing Documentation:
    (One or more of <file>.)
 
  Optional parts are enclosed in square brackets:
-   [<extra>]
-   (Zero or one <extra>.)
+   [<file>...]
+   (Zero or more of <file>.)
 
    --exec-path[=<path>]
    (Option with an optional argument.  Note that the "=" is inside the
@@ -664,6 +685,16 @@ Writing Documentation:
  Multiple alternatives are indicated with vertical bars:
    [-q | --quiet]
    [--utf8 | --no-utf8]
+
+ Use spacing around "|" token(s), but not immediately after opening or
+ before closing a [] or () pair:
+   Do: [-q | --quiet]
+   Don't: [-q|--quiet]
+
+ Don't use spacing around "|" tokens when they're used to separate the
+ alternate arguments of an option:
+    Do: --track[=(direct|inherit)]
+    Don't: --track[=(direct | inherit)]
 
  Parentheses are used for grouping:
    [(<rev> | <range>)...]

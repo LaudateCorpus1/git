@@ -36,28 +36,6 @@ test_expect_success 'setup remote repository' '
 
 setup_askpass_helper
 
-cat >exp <<EOF
-GET  /smart/test_repo.git/info/refs?service=git-upload-pack HTTP/1.1 200
-POST /smart/test_repo.git/git-upload-pack HTTP/1.1 200
-EOF
-test_expect_success 'no empty path components' '
-	# Clear the log, so that it does not affect the "used receive-pack
-	# service" test which reads the log too.
-	test_when_finished ">\"\$HTTPD_ROOT_PATH\"/access.log" &&
-
-	# In the URL, add a trailing slash, and see if git appends yet another
-	# slash.
-	cd "$ROOT_PATH" &&
-	git clone $HTTPD_URL/smart/test_repo.git/ test_repo_clone &&
-
-	# NEEDSWORK: If the overspecification of the expected result is reduced, we
-	# might be able to run this test in all protocol versions.
-	if test "$GIT_TEST_PROTOCOL_VERSION" = 0
-	then
-		check_access_log exp
-	fi
-'
-
 test_expect_success 'clone remote repository' '
 	rm -rf test_repo_clone &&
 	git clone $HTTPD_URL/smart/test_repo.git test_repo_clone &&
@@ -67,6 +45,10 @@ test_expect_success 'clone remote repository' '
 '
 
 test_expect_success 'push to remote repository (standard)' '
+	# Clear the log, so that the "used receive-pack service" test below
+	# sees just what we did here.
+	>"$HTTPD_ROOT_PATH"/access.log &&
+
 	cd "$ROOT_PATH"/test_repo_clone &&
 	: >path2 &&
 	git add path2 &&
@@ -78,6 +60,15 @@ test_expect_success 'push to remote repository (standard)' '
 	grep "POST git-receive-pack ([0-9]* bytes)" err &&
 	(cd "$HTTPD_DOCUMENT_ROOT_PATH"/test_repo.git &&
 	 test $HEAD = $(git rev-parse --verify HEAD))
+'
+
+test_expect_success 'used receive-pack service' '
+	cat >exp <<-\EOF &&
+	GET  /smart/test_repo.git/info/refs?service=git-receive-pack HTTP/1.1 200
+	POST /smart/test_repo.git/git-receive-pack HTTP/1.1 200
+	EOF
+
+	check_access_log exp
 '
 
 test_expect_success 'push to remote repository (standard) with sending Accept-Language' '
@@ -141,28 +132,6 @@ test_expect_success 'rejected update prints status' '
 '
 rm -f "$HTTPD_DOCUMENT_ROOT_PATH/test_repo.git/hooks/update"
 
-cat >exp <<EOF
-GET  /smart/test_repo.git/info/refs?service=git-upload-pack HTTP/1.1 200
-POST /smart/test_repo.git/git-upload-pack HTTP/1.1 200
-GET  /smart/test_repo.git/info/refs?service=git-receive-pack HTTP/1.1 200
-POST /smart/test_repo.git/git-receive-pack HTTP/1.1 200
-GET  /smart/test_repo.git/info/refs?service=git-receive-pack HTTP/1.1 200
-GET  /smart/test_repo.git/info/refs?service=git-receive-pack HTTP/1.1 200
-POST /smart/test_repo.git/git-receive-pack HTTP/1.1 200
-GET  /smart/test_repo.git/info/refs?service=git-receive-pack HTTP/1.1 200
-POST /smart/test_repo.git/git-receive-pack HTTP/1.1 200
-GET  /smart/test_repo.git/info/refs?service=git-receive-pack HTTP/1.1 200
-POST /smart/test_repo.git/git-receive-pack HTTP/1.1 200
-EOF
-test_expect_success 'used receive-pack service' '
-	# NEEDSWORK: If the overspecification of the expected result is reduced, we
-	# might be able to run this test in all protocol versions.
-	if test "$GIT_TEST_PROTOCOL_VERSION" = 0
-	then
-		check_access_log exp
-	fi
-'
-
 test_http_push_nonff "$HTTPD_DOCUMENT_ROOT_PATH"/test_repo.git \
 	"$ROOT_PATH"/test_repo_clone main 		success
 
@@ -184,7 +153,7 @@ test_expect_success 'push fails for non-fast-forward refs unmatched by remote he
 '
 
 test_expect_success 'push fails for non-fast-forward refs unmatched by remote helper: our output' '
-	test_i18ngrep "Updates were rejected because" \
+	test_grep "Updates were rejected because" \
 		output
 '
 
@@ -328,7 +297,7 @@ test_expect_success TTY 'push shows progress when stderr is a tty' '
 	cd "$ROOT_PATH"/test_repo_clone &&
 	test_commit noisy &&
 	test_terminal git push >output 2>&1 &&
-	test_i18ngrep "^Writing objects" output
+	test_grep "^Writing objects" output
 '
 
 test_expect_success TTY 'push --quiet silences status and progress' '
@@ -342,16 +311,16 @@ test_expect_success TTY 'push --no-progress silences progress but not status' '
 	cd "$ROOT_PATH"/test_repo_clone &&
 	test_commit no-progress &&
 	test_terminal git push --no-progress >output 2>&1 &&
-	test_i18ngrep "^To http" output &&
-	test_i18ngrep ! "^Writing objects" output
+	test_grep "^To http" output &&
+	test_grep ! "^Writing objects" output
 '
 
 test_expect_success 'push --progress shows progress to non-tty' '
 	cd "$ROOT_PATH"/test_repo_clone &&
 	test_commit progress &&
 	git push --progress >output 2>&1 &&
-	test_i18ngrep "^To http" output &&
-	test_i18ngrep "^Writing objects" output
+	test_grep "^To http" output &&
+	test_grep "^Writing objects" output
 '
 
 test_expect_success 'http push gives sane defaults to reflog' '
@@ -520,10 +489,10 @@ test_expect_success 'colorize errors/hints' '
 		-c color.push=always \
 		push origin origin/main^:main 2>act &&
 	test_decode_color <act >decoded &&
-	test_i18ngrep "<RED>.*rejected.*<RESET>" decoded &&
-	test_i18ngrep "<RED>error: failed to push some refs" decoded &&
-	test_i18ngrep "<YELLOW>hint: " decoded &&
-	test_i18ngrep ! "^hint: " decoded
+	test_grep "<RED>.*rejected.*<RESET>" decoded &&
+	test_grep "<RED>error: failed to push some refs" decoded &&
+	test_grep "<YELLOW>hint: " decoded &&
+	test_grep ! "^hint: " decoded
 '
 
 test_expect_success 'report error server does not provide ref status' '

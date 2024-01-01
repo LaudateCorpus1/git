@@ -5,12 +5,19 @@
  * Copyright (C) Junio C Hamano, 2005
  */
 #include "builtin.h"
+#include "abspath.h"
 #include "config.h"
-#include "object-store.h"
+#include "gettext.h"
+#include "hex.h"
+#include "object-file.h"
+#include "object-store-ll.h"
 #include "blob.h"
 #include "quote.h"
 #include "parse-options.h"
 #include "exec-cmd.h"
+#include "setup.h"
+#include "strbuf.h"
+#include "write-or-die.h"
 
 /*
  * This is to create corrupt objects for debugging and as such it
@@ -27,6 +34,7 @@ static int hash_literally(struct object_id *oid, int fd, const char *type, unsig
 	else
 		ret = write_object_file_literally(buf.buf, buf.len, type, oid,
 						 flags);
+	close(fd);
 	strbuf_release(&buf);
 	return ret;
 }
@@ -80,8 +88,9 @@ static void hash_stdin_paths(const char *type, int no_filters, unsigned flags,
 int cmd_hash_object(int argc, const char **argv, const char *prefix)
 {
 	static const char * const hash_object_usage[] = {
-		N_("git hash-object [-t <type>] [-w] [--path=<file> | --no-filters] [--stdin] [--] <file>..."),
-		"git hash-object  --stdin-paths",
+		N_("git hash-object [-t <type>] [-w] [--path=<file> | --no-filters]\n"
+		   "                [--stdin [--literally]] [--] <file>..."),
+		N_("git hash-object [-t <type>] [-w] --stdin-paths [--no-filters]"),
 		NULL
 	};
 	const char *type = blob_type;

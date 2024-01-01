@@ -6,10 +6,16 @@
 #include <wchar.h>
 #include "../strbuf.h"
 #include "../run-command.h"
-#include "../cache.h"
+#include "../abspath.h"
+#include "../alloc.h"
 #include "win32/lazyload.h"
 #include "../config.h"
+#include "../environment.h"
+#include "../trace2.h"
+#include "../symlinks.h"
+#include "../wrapper.h"
 #include "dir.h"
+#include "gettext.h"
 #define SECURITY_WIN32
 #include <sspi.h>
 
@@ -196,16 +202,19 @@ static int read_yes_no_answer(void)
 static int ask_yes_no_if_possible(const char *format, ...)
 {
 	char question[4096];
-	const char *retry_hook[] = { NULL, NULL, NULL };
+	const char *retry_hook;
 	va_list args;
 
 	va_start(args, format);
 	vsnprintf(question, sizeof(question), format, args);
 	va_end(args);
 
-	if ((retry_hook[0] = mingw_getenv("GIT_ASK_YESNO"))) {
-		retry_hook[1] = question;
-		return !run_command_v_opt(retry_hook, 0);
+	retry_hook = mingw_getenv("GIT_ASK_YESNO");
+	if (retry_hook) {
+		struct child_process cmd = CHILD_PROCESS_INIT;
+
+		strvec_pushl(&cmd.args, retry_hook, question, NULL);
+		return !run_command(&cmd);
 	}
 
 	if (!isatty(_fileno(stdin)) || !isatty(_fileno(stderr)))
@@ -234,7 +243,8 @@ static int core_restrict_inherited_handles = -1;
 static enum hide_dotfiles_type hide_dotfiles = HIDE_DOTFILES_DOTGITONLY;
 static char *unset_environment_variables;
 
-int mingw_core_config(const char *var, const char *value, void *cb)
+int mingw_core_config(const char *var, const char *value,
+		      const struct config_context *ctx, void *cb)
 {
 	if (!strcmp(var, "core.hidedotfiles")) {
 		if (value && !strcasecmp(value, "dotgitonly"))
@@ -245,6 +255,8 @@ int mingw_core_config(const char *var, const char *value, void *cb)
 	}
 
 	if (!strcmp(var, "core.unsetenvvars")) {
+		if (!value)
+			return config_error_nonbool(var);
 		free(unset_environment_variables);
 		unset_environment_variables = xstrdup(value);
 		return 0;
@@ -1337,6 +1349,11 @@ static char *path_lookup(const char *cmd, int exe_only)
 	return prog;
 }
 
+char *mingw_locate_in_PATH(const char *cmd)
+{
+	return path_lookup(cmd, 0);
+}
+
 static const wchar_t *wcschrnul(const wchar_t *s, wchar_t c)
 {
 	while (*s && *s != c)
@@ -1393,8 +1410,7 @@ static wchar_t *make_environment_block(char **deltaenv)
 			p += s;
 		}
 
-		ALLOC_ARRAY(result, size);
-		COPY_ARRAY(result, wenv, size);
+		DUP_ARRAY(result, wenv, size);
 		FreeEnvironmentStringsW(wenv);
 		return result;
 	}
@@ -1836,16 +1852,13 @@ static int try_shell_exec(const char *cmd, char *const *argv)
 	if (prog) {
 		int exec_id;
 		int argc = 0;
-#ifndef _MSC_VER
-		const
-#endif
 		char **argv2;
 		while (argv[argc]) argc++;
 		ALLOC_ARRAY(argv2, argc + 1);
 		argv2[0] = (char *)cmd;	/* full path to the script file */
 		COPY_ARRAY(&argv2[1], &argv[1], argc);
-		exec_id = trace2_exec(prog, argv2);
-		pid = mingw_spawnv(prog, argv2, 1);
+		exec_id = trace2_exec(prog, (const char **)argv2);
+		pid = mingw_spawnv(prog, (const char **)argv2, 1);
 		if (pid >= 0) {
 			int status;
 			if (waitpid(pid, &status, 0) < 0)
@@ -2749,7 +2762,7 @@ int is_path_owned_by_current_sid(const char *path, struct strbuf *report)
 			/*
 			 * On FAT32 volumes, ownership is not actually recorded.
 			 */
-			strbuf_addf(report, "'%s' is on a file system that does"
+			strbuf_addf(report, "'%s' is on a file system that does "
 				    "not record ownership\n", path);
 		} else if (report) {
 			LPSTR str1, str2, to_free1 = NULL, to_free2 = NULL;

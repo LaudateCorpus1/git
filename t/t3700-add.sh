@@ -24,17 +24,17 @@ test_mode_in_index () {
 	esac
 }
 
-test_expect_success \
-    'Test of git add' \
-    'touch foo && git add foo'
+test_expect_success 'Test of git add' '
+	touch foo && git add foo
+'
 
-test_expect_success \
-    'Post-check that foo is in the index' \
-    'git ls-files foo | grep foo'
+test_expect_success 'Post-check that foo is in the index' '
+	git ls-files foo | grep foo
+'
 
-test_expect_success \
-    'Test that "git add -- -q" works' \
-    'touch -- -q && git add -- -q'
+test_expect_success 'Test that "git add -- -q" works' '
+	touch -- -q && git add -- -q
+'
 
 BATCH_CONFIGURATION='-c core.fsync=loose-object -c core.fsyncmethod=batch'
 
@@ -106,24 +106,32 @@ test_expect_success '.gitignore test setup' '
 
 test_expect_success '.gitignore is honored' '
 	git add . &&
-	! (git ls-files | grep "\\.ig")
+	git ls-files >files &&
+	sed -n "/\\.ig/p" <files >actual &&
+	test_must_be_empty actual
 '
 
 test_expect_success 'error out when attempting to add ignored ones without -f' '
 	test_must_fail git add a.?? &&
-	! (git ls-files | grep "\\.ig")
+	git ls-files >files &&
+	sed -n "/\\.ig/p" <files >actual &&
+	test_must_be_empty actual
 '
 
 test_expect_success 'error out when attempting to add ignored ones without -f' '
 	test_must_fail git add d.?? &&
-	! (git ls-files | grep "\\.ig")
+	git ls-files >files &&
+	sed -n "/\\.ig/p" <files >actual &&
+	test_must_be_empty actual
 '
 
 test_expect_success 'error out when attempting to add ignored ones but add others' '
 	touch a.if &&
 	test_must_fail git add a.?? &&
-	! (git ls-files | grep "\\.ig") &&
-	(git ls-files | grep a.if)
+	git ls-files >files &&
+	sed -n "/\\.ig/p" <files >actual &&
+	test_must_be_empty actual &&
+	grep a.if files
 '
 
 test_expect_success 'add ignored ones with -f' '
@@ -276,14 +284,14 @@ test_expect_success POSIXPERM,SANITY 'git add (add.ignore-errors = false)' '
 rm -f foo2
 
 test_expect_success POSIXPERM,SANITY '--no-ignore-errors overrides config' '
-       git config add.ignore-errors 1 &&
-       git reset --hard &&
-       date >foo1 &&
-       date >foo2 &&
-       chmod 0 foo2 &&
-       test_must_fail git add --verbose --no-ignore-errors . &&
-       ! ( git ls-files foo1 | grep foo1 ) &&
-       git config add.ignore-errors 0
+	git config add.ignore-errors 1 &&
+	git reset --hard &&
+	date >foo1 &&
+	date >foo2 &&
+	chmod 0 foo2 &&
+	test_must_fail git add --verbose --no-ignore-errors . &&
+	! ( git ls-files foo1 | grep foo1 ) &&
+	git config add.ignore-errors 0
 '
 rm -f foo2
 
@@ -291,7 +299,7 @@ test_expect_success BSLASHPSPEC "git add 'fo\\[ou\\]bar' ignores foobar" '
 	git reset --hard &&
 	touch fo\[ou\]bar foobar &&
 	git add '\''fo\[ou\]bar'\'' &&
-	git ls-files fo\[ou\]bar | fgrep fo\[ou\]bar &&
+	git ls-files fo\[ou\]bar | grep -F fo\[ou\]bar &&
 	! ( git ls-files foobar | grep foobar )
 '
 
@@ -430,7 +438,7 @@ test_expect_success 'git add --chmod fails with non regular files (but updates t
 	test_ln_s_add foo foo3 &&
 	touch foo4 &&
 	test_must_fail git add --chmod=+x foo3 foo4 2>stderr &&
-	test_i18ngrep "cannot chmod +x .foo3." stderr &&
+	test_grep "cannot chmod +x .foo3." stderr &&
 	test_mode_in_index 120000 foo3 &&
 	test_mode_in_index 100755 foo4
 '
@@ -447,12 +455,12 @@ test_expect_success 'git add --chmod --dry-run reports error for non regular fil
 	git reset --hard &&
 	test_ln_s_add foo foo4 &&
 	test_must_fail git add --chmod=+x --dry-run foo4 2>stderr &&
-	test_i18ngrep "cannot chmod +x .foo4." stderr
+	test_grep "cannot chmod +x .foo4." stderr
 '
 
 test_expect_success 'git add --chmod --dry-run reports error for unmatched pathspec' '
 	test_must_fail git add --chmod=+x --dry-run nonexistent 2>stderr &&
-	test_i18ngrep "pathspec .nonexistent. did not match any files" stderr
+	test_grep "pathspec .nonexistent. did not match any files" stderr
 '
 
 test_expect_success 'no file status change if no pathspec is given' '

@@ -1,6 +1,11 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "exec-cmd.h"
+#include "gettext.h"
 #include "attr.h"
+#include "repository.h"
+#include "setup.h"
+#include "strbuf.h"
+#include "trace2.h"
 
 /*
  * Many parts of Git have subprograms communicate via pipe, expect the
@@ -40,6 +45,7 @@ int main(int argc, const char **argv)
 
 	git_resolve_executable_dir(argv[0]);
 
+	setlocale(LC_CTYPE, "");
 	git_setup_gettext();
 
 	initialize_the_repository();

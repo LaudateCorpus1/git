@@ -1,5 +1,7 @@
-
+#include "git-compat-util.h"
+#include "hex.h"
 #include "refs-internal.h"
+#include "string-list.h"
 #include "trace.h"
 
 static struct trace_key trace_refs = TRACE_KEY_INIT(REFS);
@@ -121,10 +123,10 @@ static int debug_initial_transaction_commit(struct ref_store *refs,
 	return res;
 }
 
-static int debug_pack_refs(struct ref_store *ref_store, unsigned int flags)
+static int debug_pack_refs(struct ref_store *ref_store, struct pack_refs_opts *opts)
 {
 	struct debug_ref_store *drefs = (struct debug_ref_store *)ref_store;
-	int res = drefs->refs->be->pack_refs(drefs->refs, flags);
+	int res = drefs->refs->be->pack_refs(drefs->refs, opts);
 	trace_printf_key(&trace_refs, "pack_refs: %d\n", res);
 	return res;
 }
@@ -138,20 +140,6 @@ static int debug_create_symref(struct ref_store *ref_store,
 						 logmsg);
 	trace_printf_key(&trace_refs, "create_symref: %s -> %s \"%s\": %d\n", ref_name,
 		target, logmsg, res);
-	return res;
-}
-
-static int debug_delete_refs(struct ref_store *ref_store, const char *msg,
-			     struct string_list *refnames, unsigned int flags)
-{
-	struct debug_ref_store *drefs = (struct debug_ref_store *)ref_store;
-	int res =
-		drefs->refs->be->delete_refs(drefs->refs, msg, refnames, flags);
-	int i;
-	trace_printf_key(&trace_refs, "delete_refs {\n");
-	for (i = 0; i < refnames->nr; i++)
-		trace_printf_key(&trace_refs, "%s\n", refnames->items[i].string);
-	trace_printf_key(&trace_refs, "}: %d\n", res);
 	return res;
 }
 
@@ -227,11 +215,12 @@ static struct ref_iterator_vtable debug_ref_iterator_vtable = {
 
 static struct ref_iterator *
 debug_ref_iterator_begin(struct ref_store *ref_store, const char *prefix,
-			 unsigned int flags)
+			 const char **exclude_patterns, unsigned int flags)
 {
 	struct debug_ref_store *drefs = (struct debug_ref_store *)ref_store;
 	struct ref_iterator *res =
-		drefs->refs->be->iterator_begin(drefs->refs, prefix, flags);
+		drefs->refs->be->iterator_begin(drefs->refs, prefix,
+						exclude_patterns, flags);
 	struct debug_ref_iterator *diter = xcalloc(1, sizeof(*diter));
 	base_ref_iterator_init(&diter->base, &debug_ref_iterator_vtable, 1);
 	diter->iter = res;
@@ -455,7 +444,6 @@ struct ref_storage_be refs_be_debug = {
 
 	.pack_refs = debug_pack_refs,
 	.create_symref = debug_create_symref,
-	.delete_refs = debug_delete_refs,
 	.rename_ref = debug_rename_ref,
 	.copy_ref = debug_copy_ref,
 

@@ -5,6 +5,7 @@ test_description='prune $GIT_DIR/worktrees'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success initialize '
@@ -46,7 +47,7 @@ test_expect_success SANITY 'prune directories with unreadable gitdir' '
 	: >.git/worktrees/def/gitdir &&
 	chmod u-r .git/worktrees/def/gitdir &&
 	git worktree prune --verbose 2>actual &&
-	test_i18ngrep "Removing worktrees/def: unable to read gitdir file" actual &&
+	test_grep "Removing worktrees/def: unable to read gitdir file" actual &&
 	! test -d .git/worktrees/def &&
 	! test -d .git/worktrees
 '
@@ -56,7 +57,7 @@ test_expect_success 'prune directories with invalid gitdir' '
 	: >.git/worktrees/def/def &&
 	: >.git/worktrees/def/gitdir &&
 	git worktree prune --verbose 2>actual &&
-	test_i18ngrep "Removing worktrees/def: invalid gitdir file" actual &&
+	test_grep "Removing worktrees/def: invalid gitdir file" actual &&
 	! test -d .git/worktrees/def &&
 	! test -d .git/worktrees
 '
@@ -66,7 +67,7 @@ test_expect_success 'prune directories with gitdir pointing to nowhere' '
 	: >.git/worktrees/def/def &&
 	echo "$(pwd)"/nowhere >.git/worktrees/def/gitdir &&
 	git worktree prune --verbose 2>actual &&
-	test_i18ngrep "Removing worktrees/def: gitdir file points to non-existent location" actual &&
+	test_grep "Removing worktrees/def: gitdir file points to non-existent location" actual &&
 	! test -d .git/worktrees/def &&
 	! test -d .git/worktrees
 '
@@ -102,7 +103,7 @@ test_expect_success 'prune duplicate (linked/linked)' '
 	sed "s/w2/w1/" .git/worktrees/w2/gitdir >.git/worktrees/w2/gitdir.new &&
 	mv .git/worktrees/w2/gitdir.new .git/worktrees/w2/gitdir &&
 	git worktree prune --verbose 2>actual &&
-	test_i18ngrep "duplicate entry" actual &&
+	test_grep "duplicate entry" actual &&
 	test -d .git/worktrees/w1 &&
 	! test -d .git/worktrees/w2
 '
@@ -115,7 +116,7 @@ test_expect_success 'prune duplicate (main/linked)' '
 	rm -fr wt &&
 	mv repo wt &&
 	git -C wt worktree prune --verbose 2>actual &&
-	test_i18ngrep "duplicate entry" actual &&
+	test_grep "duplicate entry" actual &&
 	! test -d .git/worktrees/wt
 '
 

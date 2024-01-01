@@ -7,19 +7,28 @@
  * even if you might want to know where the git directory etc
  * are.
  */
-#include "cache.h"
+#include "git-compat-util.h"
+#include "abspath.h"
 #include "branch.h"
+#include "convert.h"
 #include "environment.h"
+#include "gettext.h"
 #include "repository.h"
 #include "config.h"
 #include "refs.h"
 #include "fmt-merge-msg.h"
 #include "commit.h"
 #include "strvec.h"
-#include "object-store.h"
+#include "object-file.h"
+#include "object-store-ll.h"
+#include "path.h"
+#include "replace-object.h"
 #include "tmp-objdir.h"
 #include "chdir-notify.h"
+#include "setup.h"
 #include "shallow.h"
+#include "trace.h"
+#include "write-or-die.h"
 
 int trust_executable_bit = 1;
 int trust_ctime = 1;
@@ -33,7 +42,6 @@ int is_bare_repository_cfg = -1; /* unspecified */
 int warn_ambiguous_refs = 1;
 int warn_on_object_refname_ambiguity = 1;
 int repository_format_precious_objects;
-int repository_format_worktree_config;
 const char *git_commit_encoding;
 const char *git_log_output_encoding;
 char *apply_default_whitespace;
@@ -50,16 +58,13 @@ size_t packed_git_window_size = DEFAULT_PACKED_GIT_WINDOW_SIZE;
 size_t packed_git_limit = DEFAULT_PACKED_GIT_LIMIT;
 size_t delta_base_cache_limit = 96 * 1024 * 1024;
 unsigned long big_file_threshold = 512 * 1024 * 1024;
-int pager_use_color = 1;
 const char *editor_program;
 const char *askpass_program;
 const char *excludes_file;
 enum auto_crlf auto_crlf = AUTO_CRLF_FALSE;
-int read_replace_refs = 1;
 enum eol core_eol = EOL_UNSET;
 int global_conv_flags_eol = CONV_EOL_RNDTRP_WARN;
-char *check_roundtrip_encoding = "SHIFT-JIS";
-unsigned whitespace_rule_cfg = WS_DEFAULT_RULE;
+const char *check_roundtrip_encoding = "SHIFT-JIS";
 enum branch_track git_branch_track = BRANCH_TRACK_REMOTE;
 enum rebase_setup_type autorebase = AUTOREBASE_NEVER;
 enum push_default_type push_default = PUSH_DEFAULT_UNSPECIFIED;
@@ -68,7 +73,7 @@ enum push_default_type push_default = PUSH_DEFAULT_UNSPECIFIED;
 #endif
 enum object_creation_mode object_creation_mode = OBJECT_CREATION_MODE;
 char *notes_ref_name;
-int grafts_replace_parents = 1;
+int grafts_keep_true_parents;
 int core_apply_sparse_checkout;
 int core_sparse_checkout_cone;
 int sparse_expect_files_outside_of_patterns;
@@ -76,6 +81,20 @@ int merge_log_config = -1;
 int precomposed_unicode = -1; /* see probe_utf8_pathname_composition() */
 unsigned long pack_size_limit_cfg;
 enum log_refs_config log_all_ref_updates = LOG_REFS_UNSET;
+int max_allowed_tree_depth =
+#ifdef _MSC_VER
+	/*
+	 * When traversing into too-deep trees, Visual C-compiled Git seems to
+	 * run into some internal stack overflow detection in the
+	 * `RtlpAllocateHeap()` function that is called from within
+	 * `git_inflate_init()`'s call tree. The following value seems to be
+	 * low enough to avoid that by letting Git exit with an error before
+	 * the stack overflow can occur.
+	 */
+	512;
+#else
+	2048;
+#endif
 
 #ifndef PROTECT_HFS_DEFAULT
 #define PROTECT_HFS_DEFAULT 0
@@ -102,10 +121,8 @@ char *git_work_tree_cfg;
 
 static char *git_namespace;
 
-static char *super_prefix;
-
 /*
- * Repository-local GIT_* environment variables; see cache.h for details.
+ * Repository-local GIT_* environment variables; see environment.h for details.
  */
 const char * const local_repo_env[] = {
 	ALTERNATE_DB_ENVIRONMENT,
@@ -121,7 +138,6 @@ const char * const local_repo_env[] = {
 	NO_REPLACE_OBJECTS_ENVIRONMENT,
 	GIT_REPLACE_REF_BASE_ENVIRONMENT,
 	GIT_PREFIX_ENVIRONMENT,
-	GIT_SUPER_PREFIX_ENVIRONMENT,
 	GIT_SHALLOW_FILE_ENVIRONMENT,
 	GIT_COMMON_DIR_ENVIRONMENT,
 	NULL
@@ -180,7 +196,7 @@ void setup_git_env(const char *git_dir)
 	strvec_clear(&to_free);
 
 	if (getenv(NO_REPLACE_OBJECTS_ENVIRONMENT))
-		read_replace_refs = 0;
+		disable_replace_refs();
 	replace_ref_base = getenv(GIT_REPLACE_REF_BASE_ENVIRONMENT);
 	git_replace_ref_base = xstrdup(replace_ref_base ? replace_ref_base
 							  : "refs/replace/");
@@ -232,16 +248,6 @@ const char *strip_namespace(const char *namespaced_ref)
 	if (skip_prefix(namespaced_ref, get_git_namespace(), &out))
 		return out;
 	return NULL;
-}
-
-const char *get_super_prefix(void)
-{
-	static int initialized;
-	if (!initialized) {
-		super_prefix = xstrdup_or_null(getenv(GIT_SUPER_PREFIX_ENVIRONMENT));
-		initialized = 1;
-	}
-	return super_prefix;
 }
 
 static int git_work_tree_initialized;

@@ -1,4 +1,5 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "gettext.h"
 #include "config.h"
 #include "commit.h"
 #include "color.h"
@@ -337,7 +338,6 @@ void graph_setup_line_prefix(struct diff_options *diffopt)
 	if (diffopt && !diffopt->output_prefix)
 		diffopt->output_prefix = diff_output_prefix_callback;
 }
-
 
 struct git_graph *graph_init(struct rev_info *opt)
 {

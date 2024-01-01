@@ -5,6 +5,7 @@ test_description='reference transaction hooks'
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success setup '
@@ -36,7 +37,7 @@ test_expect_success 'hook aborts updating ref in prepared state' '
 		fi
 	EOF
 	test_must_fail git update-ref HEAD POST 2>err &&
-	test_i18ngrep "ref updates aborted by hook" err
+	test_grep "ref updates aborted by hook" err
 '
 
 test_expect_success 'hook gets all queued updates in prepared state' '

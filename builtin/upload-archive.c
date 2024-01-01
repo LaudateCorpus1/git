@@ -1,16 +1,17 @@
 /*
  * Copyright (c) 2006 Franck Bui-Huu
  */
-#include "cache.h"
 #include "builtin.h"
 #include "archive.h"
+#include "path.h"
 #include "pkt-line.h"
 #include "sideband.h"
+#include "repository.h"
 #include "run-command.h"
 #include "strvec.h"
 
 static const char upload_archive_usage[] =
-	"git upload-archive <repo>";
+	"git upload-archive <repository>";
 
 static const char deadchild[] =
 "git upload-archive: archiver died with error";
@@ -78,6 +79,8 @@ static ssize_t process_input(int child_fd, int band)
 int cmd_upload_archive(int argc, const char **argv, const char *prefix)
 {
 	struct child_process writer = CHILD_PROCESS_INIT;
+
+	BUG_ON_NON_EMPTY_PREFIX(prefix);
 
 	if (argc == 2 && !strcmp(argv[1], "-h"))
 		usage(upload_archive_usage);

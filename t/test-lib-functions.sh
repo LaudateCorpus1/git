@@ -14,7 +14,7 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see http://www.gnu.org/licenses/ .
+# along with this program.  If not, see https://www.gnu.org/licenses/ .
 
 # The semantics of the editor variables are that of invoking
 # sh -c "$EDITOR \"$@\"" files ...
@@ -30,6 +30,14 @@ test_set_editor () {
 	export FAKE_EDITOR
 	EDITOR='"$FAKE_EDITOR"'
 	export EDITOR
+}
+
+# Like test_set_editor but sets GIT_SEQUENCE_EDITOR instead of EDITOR
+test_set_sequence_editor () {
+	FAKE_SEQUENCE_EDITOR="$1"
+	export FAKE_SEQUENCE_EDITOR
+	GIT_SEQUENCE_EDITOR='"$FAKE_SEQUENCE_EDITOR"'
+	export GIT_SEQUENCE_EDITOR
 }
 
 test_decode_color () {
@@ -243,6 +251,61 @@ debug () {
 	done
 }
 
+# Usage: test_ref_exists [options] <ref>
+#
+#   -C <dir>:
+#      Run all git commands in directory <dir>
+#
+# This helper function checks whether a reference exists. Symrefs or object IDs
+# will not be resolved. Can be used to check references with bad names.
+test_ref_exists () {
+	local indir=
+
+	while test $# != 0
+	do
+		case "$1" in
+		-C)
+			indir="$2"
+			shift
+			;;
+		*)
+			break
+			;;
+		esac
+		shift
+	done &&
+
+	indir=${indir:+"$indir"/} &&
+
+	if test "$#" != 1
+	then
+		BUG "expected exactly one reference"
+	fi &&
+
+	git ${indir:+ -C "$indir"} show-ref --exists "$1"
+}
+
+# Behaves the same as test_ref_exists, except that it checks for the absence of
+# a reference. This is preferable to `! test_ref_exists` as this function is
+# able to distinguish actually-missing references from other, generic errors.
+test_ref_missing () {
+	test_ref_exists "$@"
+	case "$?" in
+	2)
+		# This is the good case.
+		return 0
+		;;
+	0)
+		echo >&4 "test_ref_missing: reference exists"
+		return 1
+		;;
+	*)
+		echo >&4 "test_ref_missing: generic error"
+		return 1
+		;;
+	esac
+}
+
 # Usage: test_commit [options] <message> [<file> [<contents> [<tag>]]]
 #   -C <dir>:
 #	Run all git commands in directory <dir>
@@ -273,13 +336,13 @@ debug () {
 # <file>, <contents>, and <tag> all default to <message>.
 
 test_commit () {
-	notick= &&
-	echo=echo &&
-	append= &&
-	author= &&
-	signoff= &&
-	indir= &&
-	tag=light &&
+	local notick= &&
+	local echo=echo &&
+	local append= &&
+	local author= &&
+	local signoff= &&
+	local indir= &&
+	local tag=light &&
 	while test $# != 0
 	do
 		case "$1" in
@@ -322,7 +385,7 @@ test_commit () {
 		shift
 	done &&
 	indir=${indir:+"$indir"/} &&
-	file=${2:-"$1.t"} &&
+	local file=${2:-"$1.t"} &&
 	if test -n "$append"
 	then
 		$echo "${3-$1}" >>"$indir$file"
@@ -534,8 +597,17 @@ test_config () {
 		config_dir=$1
 		shift
 	fi
-	test_when_finished "test_unconfig ${config_dir:+-C '$config_dir'} '$1'" &&
-	git ${config_dir:+-C "$config_dir"} config "$@"
+
+	# If --worktree is provided, use it to configure/unconfigure
+	is_worktree=
+	if test "$1" = --worktree
+	then
+		is_worktree=1
+		shift
+	fi
+
+	test_when_finished "test_unconfig ${config_dir:+-C '$config_dir'} ${is_worktree:+--worktree} '$1'" &&
+	git ${config_dir:+-C "$config_dir"} config ${is_worktree:+--worktree} "$@"
 }
 
 test_config_global () {
@@ -893,11 +965,20 @@ test_path_is_symlink () {
 	fi
 }
 
+test_path_is_executable () {
+	test "$#" -ne 1 && BUG "1 param"
+	if ! test -x "$1"
+	then
+		echo "$1 is not executable"
+		false
+	fi
+}
+
 # Check if the directory exists and is empty as expected, barf otherwise.
 test_dir_is_empty () {
 	test "$#" -ne 1 && BUG "1 param"
 	test_path_is_dir "$1" &&
-	if test -n "$(ls -a1 "$1" | egrep -v '^\.\.?$')"
+	if test -n "$(ls -a1 "$1" | grep -E -v '^\.\.?$')"
 	then
 		echo "Directory '$1' is not empty, it contains:"
 		ls -la "$1"
@@ -921,10 +1002,6 @@ test_path_is_missing () {
 	then
 		echo "Path exists:"
 		ls -ld "$1"
-		if test $# -ge 1
-		then
-			echo "$*"
-		fi
 		false
 	fi
 }
@@ -1020,7 +1097,7 @@ test_must_fail_acceptable () {
 	fi
 
 	case "$1" in
-	git|__git*|test-tool|test_terminal)
+	git|__git*|scalar|test-tool|test_terminal)
 		return 0
 		;;
 	*)
@@ -1186,19 +1263,21 @@ test_cmp_bin () {
 	cmp "$@"
 }
 
-# Wrapper for grep which used to be used for
-# GIT_TEST_GETTEXT_POISON=false. Only here as a shim for other
-# in-flight changes. Should not be used and will be removed soon.
+# Deprecated - do not use this in new code
 test_i18ngrep () {
+	test_grep "$@"
+}
+
+test_grep () {
 	eval "last_arg=\${$#}"
 
 	test -f "$last_arg" ||
-	BUG "test_i18ngrep requires a file to read as the last parameter"
+	BUG "test_grep requires a file to read as the last parameter"
 
 	if test $# -lt 2 ||
 	   { test "x!" = "x$1" && test $# -lt 3 ; }
 	then
-		BUG "too few parameters to test_i18ngrep"
+		BUG "too few parameters to test_grep"
 	fi
 
 	if test "x!" = "x$1"
@@ -1220,15 +1299,6 @@ test_i18ngrep () {
 		echo >&4 "<File '$last_arg' is empty>"
 	fi
 
-	return 1
-}
-
-# Call any command "$@" but be more verbose about its
-# failure. This is handy for commands like "test" which do
-# not output anything when they fail.
-verbose () {
-	"$@" && return 0
-	echo >&4 "command failed: $(git rev-parse --sq-quote "$@")"
 	return 1
 }
 
@@ -1276,6 +1346,39 @@ test_cmp_rev () {
 			return 1
 		fi
 	fi
+}
+
+# Tests that a commit message matches the expected text
+#
+# Usage: test_commit_message <rev> [-m <msg> | <file>]
+#
+# When using "-m" <msg> will have a line feed appended. If the second
+# argument is omitted then the expected message is read from stdin.
+
+test_commit_message () {
+	local msg_file=expect.msg
+
+	case $# in
+	3)
+		if test "$2" = "-m"
+		then
+			printf "%s\n" "$3" >"$msg_file"
+		else
+			BUG "Usage: test_commit_message <rev> [-m <message> | <file>]"
+		fi
+		;;
+	2)
+		msg_file="$2"
+		;;
+	1)
+		cat >"$msg_file"
+		;;
+	*)
+		BUG "Usage: test_commit_message <rev> [-m <message> | <file>]"
+		;;
+	esac
+	git show --no-patch --pretty=format:%B "$1" -- >actual.msg &&
+	test_cmp "$msg_file" actual.msg
 }
 
 # Compare paths respecting core.ignoreCase
@@ -1426,7 +1529,7 @@ test_bool_env () {
 		BUG "test_bool_env requires two parameters (variable name and default value)"
 	fi
 
-	git env--helper --type=bool --default="$2" --exit-code "$1"
+	test-tool env-helper --type=bool --default="$2" --exit-code "$1"
 	ret=$?
 	case $ret in
 	0|1)	# unset or valid bool value
@@ -1452,72 +1555,6 @@ test_skip_or_die () {
 		test_done
 	fi
 	error "$2"
-}
-
-# The following mingw_* functions obey POSIX shell syntax, but are actually
-# bash scripts, and are meant to be used only with bash on Windows.
-
-# A test_cmp function that treats LF and CRLF equal and avoids to fork
-# diff when possible.
-mingw_test_cmp () {
-	# Read text into shell variables and compare them. If the results
-	# are different, use regular diff to report the difference.
-	local test_cmp_a= test_cmp_b=
-
-	# When text came from stdin (one argument is '-') we must feed it
-	# to diff.
-	local stdin_for_diff=
-
-	# Since it is difficult to detect the difference between an
-	# empty input file and a failure to read the files, we go straight
-	# to diff if one of the inputs is empty.
-	if test -s "$1" && test -s "$2"
-	then
-		# regular case: both files non-empty
-		mingw_read_file_strip_cr_ test_cmp_a <"$1"
-		mingw_read_file_strip_cr_ test_cmp_b <"$2"
-	elif test -s "$1" && test "$2" = -
-	then
-		# read 2nd file from stdin
-		mingw_read_file_strip_cr_ test_cmp_a <"$1"
-		mingw_read_file_strip_cr_ test_cmp_b
-		stdin_for_diff='<<<"$test_cmp_b"'
-	elif test "$1" = - && test -s "$2"
-	then
-		# read 1st file from stdin
-		mingw_read_file_strip_cr_ test_cmp_a
-		mingw_read_file_strip_cr_ test_cmp_b <"$2"
-		stdin_for_diff='<<<"$test_cmp_a"'
-	fi
-	test -n "$test_cmp_a" &&
-	test -n "$test_cmp_b" &&
-	test "$test_cmp_a" = "$test_cmp_b" ||
-	eval "diff -u \"\$@\" $stdin_for_diff"
-}
-
-# $1 is the name of the shell variable to fill in
-mingw_read_file_strip_cr_ () {
-	# Read line-wise using LF as the line separator
-	# and use IFS to strip CR.
-	local line
-	while :
-	do
-		if IFS=$'\r' read -r -d $'\n' line
-		then
-			# good
-			line=$line$'\n'
-		else
-			# we get here at EOF, but also if the last line
-			# was not terminated by LF; in the latter case,
-			# some text was read
-			if test -z "$line"
-			then
-				# EOF, really
-				break
-			fi
-		fi
-		eval "$1=\$$1\$line"
-	done
 }
 
 # Like "env FOO=BAR some-program", but run inside a subshell, which means
@@ -1686,7 +1723,7 @@ test_oid () {
 	then
 		BUG "undefined key '$1'"
 	fi &&
-	eval "printf '%s' \"\${$var}\""
+	eval "printf '%s\n' \"\${$var}\""
 }
 
 # Insert a slash into an object ID so it can be used to reference a location
@@ -1753,6 +1790,13 @@ test_path_is_hidden () {
 	# Use the output of `attrib`, ignore the absolute path
 	case "$("$SYSTEMROOT"/system32/attrib "$1")" in *H*?:*) return 0;; esac
 	return 1
+}
+
+# Poor man's URI escaping. Good enough for the test suite whose trash
+# directory has a space in it. See 93c3fcbe4d4 (git-svn: attempt to
+# mimic SVN 1.7 URL canonicalization, 2012-07-28) for prior art.
+test_uri_escape() {
+	sed 's/ /%20/g'
 }
 
 # Check that the given command was invoked as part of the
@@ -1830,6 +1874,14 @@ test_region () {
 	return 0
 }
 
+# Given a GIT_TRACE2_EVENT log over stdin, writes to stdout a list of URLs
+# sent to git-remote-https child processes.
+test_remote_https_urls() {
+	grep -e '"event":"child_start".*"argv":\["git-remote-https",".*"\]' |
+		sed -e 's/{"event":"child_start".*"argv":\["git-remote-https","//g' \
+		    -e 's/"\]}//g'
+}
+
 # Print the destination of symlink(s) provided as arguments. Basically
 # the same as the readlink command, but it's not available everywhere.
 test_readlink () {
@@ -1867,4 +1919,23 @@ test_is_magic_mtime () {
 	rm -f .git/test-mtime-expect
 	rm -f .git/test-mtime-actual
 	return $ret
+}
+
+# Given two filenames, parse both using 'git config --list --file'
+# and compare the sorted output of those commands. Useful when
+# wanting to ignore whitespace differences and sorting concerns.
+test_cmp_config_output () {
+	git config --list --file="$1" >config-expect &&
+	git config --list --file="$2" >config-actual &&
+	sort config-expect >sorted-expect &&
+	sort config-actual >sorted-actual &&
+	test_cmp sorted-expect sorted-actual
+}
+
+# Given a filename, extract its trailing hash as a hex string
+test_trailing_hash () {
+	local file="$1" &&
+	tail -c $(test_oid rawsz) "$file" |
+		test-tool hexdump |
+		sed "s/ //g"
 }

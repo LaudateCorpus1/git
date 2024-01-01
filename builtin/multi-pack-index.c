@@ -1,10 +1,13 @@
 #include "builtin.h"
-#include "cache.h"
+#include "abspath.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
 #include "parse-options.h"
 #include "midx.h"
+#include "strbuf.h"
 #include "trace2.h"
-#include "object-store.h"
+#include "object-store-ll.h"
 
 #define BUILTIN_MIDX_WRITE_USAGE \
 	N_("git multi-pack-index [<options>] write [--preferred-pack=<pack>]" \
@@ -56,11 +59,12 @@ static struct opts_multi_pack_index {
 static int parse_object_dir(const struct option *opt, const char *arg,
 			    int unset)
 {
-	free(opts.object_dir);
+	char **value = opt->value;
+	free(*value);
 	if (unset)
-		opts.object_dir = xstrdup(get_object_directory());
+		*value = xstrdup(get_object_directory());
 	else
-		opts.object_dir = real_pathdup(arg, 1);
+		*value = real_pathdup(arg, 1);
 	return 0;
 }
 
@@ -78,6 +82,7 @@ static struct option *add_common_options(struct option *prev)
 }
 
 static int git_multi_pack_index_write_config(const char *var, const char *value,
+					     const struct config_context *ctx UNUSED,
 					     void *cb UNUSED)
 {
 	if (!strcmp(var, "pack.writebitmaphashcache")) {

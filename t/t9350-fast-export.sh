@@ -268,6 +268,7 @@ test_expect_success 'signed-tags=warn-strip' '
 
 test_expect_success 'setup submodule' '
 
+	test_config_global protocol.file.allow always &&
 	git checkout -f main &&
 	mkdir sub &&
 	(
@@ -293,6 +294,7 @@ test_expect_success 'setup submodule' '
 
 test_expect_success 'submodule fast-export | fast-import' '
 
+	test_config_global protocol.file.allow always &&
 	SUBENT1=$(git ls-tree main^ sub) &&
 	SUBENT2=$(git ls-tree main sub) &&
 	rm -rf new &&
@@ -371,7 +373,7 @@ EOF
 
 test_expect_success 'cope with tagger-less tags' '
 
-	TAG=$(git hash-object -t tag -w tag-content) &&
+	TAG=$(git hash-object --literally -t tag -w tag-content) &&
 	git update-ref refs/tags/sonnenschein $TAG &&
 	git fast-export -C -C --signed-tags=strip --all > output &&
 	test $(grep -c "^tag " output) = 4 &&
@@ -787,6 +789,16 @@ test_expect_success 'fast-export --first-parent outputs all revisions output by 
 		test_cmp expected actual &&
 		test_line_count = 4 actual
 	)
+'
+
+test_expect_success 'fast-export handles --end-of-options' '
+	git update-ref refs/heads/nodash HEAD &&
+	git update-ref refs/heads/--dashes HEAD &&
+	git fast-export --end-of-options nodash >expect &&
+	git fast-export --end-of-options --dashes >actual.raw &&
+	# fix up lines which mention the ref for comparison
+	sed s/--dashes/nodash/ <actual.raw >actual &&
+	test_cmp expect actual
 '
 
 test_done

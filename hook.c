@@ -1,7 +1,12 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "abspath.h"
+#include "advice.h"
+#include "gettext.h"
 #include "hook.h"
+#include "path.h"
 #include "run-command.h"
 #include "config.h"
+#include "strbuf.h"
 
 const char *find_hook(const char *name)
 {
@@ -43,9 +48,9 @@ int hook_exists(const char *name)
 }
 
 static int pick_next_hook(struct child_process *cp,
-			  struct strbuf *out,
+			  struct strbuf *out UNUSED,
 			  void *pp_cb,
-			  void **pp_task_cb)
+			  void **pp_task_cb UNUSED)
 {
 	struct hook_cb_data *hook_cb = pp_cb;
 	const char *hook_path = hook_cb->hook_path;
@@ -55,6 +60,11 @@ static int pick_next_hook(struct child_process *cp,
 
 	cp->no_stdin = 1;
 	strvec_pushv(&cp->env, hook_cb->options->env.v);
+	/* reopen the file for stdin; run_command closes it. */
+	if (hook_cb->options->path_to_stdin) {
+		cp->no_stdin = 0;
+		cp->in = xopen(hook_cb->options->path_to_stdin, O_RDONLY);
+	}
 	cp->stdout_to_stderr = 1;
 	cp->trace2_hook_name = hook_cb->hook_name;
 	cp->dir = hook_cb->options->dir;
@@ -72,9 +82,9 @@ static int pick_next_hook(struct child_process *cp,
 	return 1;
 }
 
-static int notify_start_failure(struct strbuf *out,
+static int notify_start_failure(struct strbuf *out UNUSED,
 				void *pp_cb,
-				void *pp_task_cp)
+				void *pp_task_cp UNUSED)
 {
 	struct hook_cb_data *hook_cb = pp_cb;
 
@@ -84,9 +94,9 @@ static int notify_start_failure(struct strbuf *out,
 }
 
 static int notify_hook_finished(int result,
-				struct strbuf *out,
+				struct strbuf *out UNUSED,
 				void *pp_cb,
-				void *pp_task_cb)
+				void *pp_task_cb UNUSED)
 {
 	struct hook_cb_data *hook_cb = pp_cb;
 	struct run_hooks_opt *opt = hook_cb->options;
@@ -114,8 +124,20 @@ int run_hooks_opt(const char *hook_name, struct run_hooks_opt *options)
 		.options = options,
 	};
 	const char *const hook_path = find_hook(hook_name);
-	int jobs = 1;
 	int ret = 0;
+	const struct run_process_parallel_opts opts = {
+		.tr2_category = "hook",
+		.tr2_label = hook_name,
+
+		.processes = 1,
+		.ungroup = 1,
+
+		.get_next_task = pick_next_hook,
+		.start_failure = notify_start_failure,
+		.task_finished = notify_hook_finished,
+
+		.data = &cb_data,
+	};
 
 	if (!options)
 		BUG("a struct run_hooks_opt must be provided to run_hooks");
@@ -137,14 +159,7 @@ int run_hooks_opt(const char *hook_name, struct run_hooks_opt *options)
 		cb_data.hook_path = abs_path.buf;
 	}
 
-	run_processes_parallel_ungroup = 1;
-	run_processes_parallel_tr2(jobs,
-				   pick_next_hook,
-				   notify_start_failure,
-				   notify_hook_finished,
-				   &cb_data,
-				   "hook",
-				   hook_name);
+	run_processes_parallel(&opts);
 	ret = cb_data.rc;
 cleanup:
 	strbuf_release(&abs_path);

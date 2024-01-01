@@ -1,7 +1,6 @@
 #ifndef REFS_REFS_INTERNAL_H
 #define REFS_REFS_INTERNAL_H
 
-#include "cache.h"
 #include "refs.h"
 #include "iterator.h"
 
@@ -368,8 +367,8 @@ int is_empty_ref_iterator(struct ref_iterator *ref_iterator);
  */
 struct ref_iterator *refs_ref_iterator_begin(
 		struct ref_store *refs,
-		const char *prefix, int trim,
-		enum do_for_each_ref_flags flags);
+		const char *prefix, const char **exclude_patterns,
+		int trim, enum do_for_each_ref_flags flags);
 
 /*
  * A callback function used to instruct merge_ref_iterator how to
@@ -548,13 +547,12 @@ typedef int ref_transaction_commit_fn(struct ref_store *refs,
 				      struct ref_transaction *transaction,
 				      struct strbuf *err);
 
-typedef int pack_refs_fn(struct ref_store *ref_store, unsigned int flags);
+typedef int pack_refs_fn(struct ref_store *ref_store,
+			 struct pack_refs_opts *opts);
 typedef int create_symref_fn(struct ref_store *ref_store,
 			     const char *ref_target,
 			     const char *refs_heads_master,
 			     const char *logmsg);
-typedef int delete_refs_fn(struct ref_store *ref_store, const char *msg,
-			   struct string_list *refnames, unsigned int flags);
 typedef int rename_ref_fn(struct ref_store *ref_store,
 			  const char *oldref, const char *newref,
 			  const char *logmsg);
@@ -571,7 +569,8 @@ typedef int copy_ref_fn(struct ref_store *ref_store,
  */
 typedef struct ref_iterator *ref_iterator_begin_fn(
 		struct ref_store *ref_store,
-		const char *prefix, unsigned int flags);
+		const char *prefix, const char **exclude_patterns,
+		unsigned int flags);
 
 /* reflog functions */
 
@@ -676,7 +675,6 @@ struct ref_storage_be {
 
 	pack_refs_fn *pack_refs;
 	create_symref_fn *create_symref;
-	delete_refs_fn *delete_refs;
 	rename_ref_fn *rename_ref;
 	copy_ref_fn *copy_ref;
 

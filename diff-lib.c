@@ -1,16 +1,24 @@
 /*
  * Copyright (C) 2005 Junio C Hamano
  */
-#include "cache.h"
+#include "git-compat-util.h"
 #include "quote.h"
 #include "commit.h"
 #include "diff.h"
 #include "diffcore.h"
+#include "gettext.h"
+#include "hash.h"
+#include "hex.h"
+#include "object-name.h"
+#include "read-cache.h"
 #include "revision.h"
 #include "cache-tree.h"
 #include "unpack-trees.h"
 #include "refs.h"
+#include "repository.h"
 #include "submodule.h"
+#include "symlinks.h"
+#include "trace.h"
 #include "dir.h"
 #include "fsmonitor.h"
 #include "commit-reach.h"
@@ -28,14 +36,20 @@
  * exists for ce that is a submodule -- it is a submodule that is not
  * checked out).  Return negative for an error.
  */
-static int check_removed(const struct index_state *istate, const struct cache_entry *ce, struct stat *st)
+static int check_removed(const struct cache_entry *ce, struct stat *st)
 {
-	assert(is_fsmonitor_refreshed(istate));
-	if (!(ce->ce_flags & CE_FSMONITOR_VALID) && lstat(ce->name, st) < 0) {
+	int stat_err;
+
+	if (!(ce->ce_flags & CE_FSMONITOR_VALID))
+		stat_err = lstat(ce->name, st);
+	else
+		stat_err = fake_lstat(ce, st);
+	if (stat_err < 0) {
 		if (!is_missing_file_error(errno))
 			return -1;
 		return 1;
 	}
+
 	if (has_symlink_leading_path(ce->name, ce_namelen(ce)))
 		return 1;
 	if (S_ISDIR(st->st_mode)) {
@@ -88,7 +102,7 @@ static int match_stat_with_submodule(struct diff_options *diffopt,
 	return changed;
 }
 
-int run_diff_files(struct rev_info *revs, unsigned int option)
+void run_diff_files(struct rev_info *revs, unsigned int option)
 {
 	int entries, i;
 	int diff_unmerged_stage = revs->max_count;
@@ -141,7 +155,7 @@ int run_diff_files(struct rev_info *revs, unsigned int option)
 			memset(&(dpath->parent[0]), 0,
 			       sizeof(struct combine_diff_parent)*5);
 
-			changed = check_removed(istate, ce, &st);
+			changed = check_removed(ce, &st);
 			if (!changed)
 				wt_mode = ce_mode_from_stat(ce, st.st_mode);
 			else {
@@ -221,7 +235,7 @@ int run_diff_files(struct rev_info *revs, unsigned int option)
 		} else {
 			struct stat st;
 
-			changed = check_removed(istate, ce, &st);
+			changed = check_removed(ce, &st);
 			if (changed) {
 				if (changed < 0) {
 					perror(ce->name);
@@ -264,7 +278,6 @@ int run_diff_files(struct rev_info *revs, unsigned int option)
 	diffcore_std(&revs->diffopt);
 	diff_flush(&revs->diffopt);
 	trace_performance_since(start, "diff-files");
-	return 0;
 }
 
 /*
@@ -296,7 +309,7 @@ static int get_stat_data(const struct index_state *istate,
 	if (!cached && !ce_uptodate(ce)) {
 		int changed;
 		struct stat st;
-		changed = check_removed(istate, ce, &st);
+		changed = check_removed(ce, &st);
 		if (changed < 0)
 			return -1;
 		else if (changed) {
@@ -564,8 +577,6 @@ void diff_get_merge_base(const struct rev_info *revs, struct object_id *mb)
 		struct object *obj = revs->pending.objects[i].item;
 		if (obj->flags)
 			die(_("--merge-base does not work with ranges"));
-		if (obj->type != OBJ_COMMIT)
-			die(_("--merge-base only works with commits"));
 	}
 
 	/*
@@ -581,7 +592,7 @@ void diff_get_merge_base(const struct rev_info *revs, struct object_id *mb)
 	if (revs->pending.nr == 1) {
 		struct object_id oid;
 
-		if (get_oid("HEAD", &oid))
+		if (repo_get_oid(the_repository, "HEAD", &oid))
 			die(_("unable to get HEAD"));
 
 		mb_child[1] = lookup_commit_reference(the_repository, &oid);
@@ -598,7 +609,7 @@ void diff_get_merge_base(const struct rev_info *revs, struct object_id *mb)
 	free_commit_list(merge_bases);
 }
 
-int run_diff_index(struct rev_info *revs, unsigned int option)
+void run_diff_index(struct rev_info *revs, unsigned int option)
 {
 	struct object_array_entry *ent;
 	int cached = !!(option & DIFF_INDEX_CACHED);
@@ -632,7 +643,6 @@ int run_diff_index(struct rev_info *revs, unsigned int option)
 	diffcore_std(&revs->diffopt);
 	diff_flush(&revs->diffopt);
 	trace_performance_leave("diff-index");
-	return 0;
 }
 
 int do_diff_cache(const struct object_id *tree_oid, struct diff_options *opt)
@@ -664,16 +674,23 @@ int index_differs_from(struct repository *r,
 	setup_revisions(0, NULL, &rev, &opt);
 	rev.diffopt.flags.quick = 1;
 	rev.diffopt.flags.exit_with_status = 1;
-	if (flags)
+	if (flags) {
 		diff_flags_or(&rev.diffopt.flags, flags);
+		/*
+		 * Now that flags are merged, honor override_submodule_config
+		 * and ignore_submodules from passed flags.
+		 */
+		if (flags->override_submodule_config)
+			rev.diffopt.flags.ignore_submodules = flags->ignore_submodules;
+	}
 	rev.diffopt.ita_invisible_in_index = ita_invisible_in_index;
-	run_diff_index(&rev, 1);
+	run_diff_index(&rev, DIFF_INDEX_CACHED);
 	has_changes = rev.diffopt.flags.has_changes;
 	release_revisions(&rev);
 	return (has_changes != 0);
 }
 
-static struct strbuf *idiff_prefix_cb(struct diff_options *opt, void *data)
+static struct strbuf *idiff_prefix_cb(struct diff_options *opt UNUSED, void *data)
 {
 	return data;
 }

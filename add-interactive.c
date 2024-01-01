@@ -1,8 +1,14 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "add-interactive.h"
 #include "color.h"
 #include "config.h"
 #include "diffcore.h"
+#include "gettext.h"
+#include "hash.h"
+#include "hex.h"
+#include "preload-index.h"
+#include "read-cache-ll.h"
+#include "repository.h"
 #include "revision.h"
 #include "refs.h"
 #include "string-list.h"
@@ -10,6 +16,7 @@
 #include "dir.h"
 #include "run-command.h"
 #include "prompt.h"
+#include "tree.h"
 
 static void init_color(struct repository *r, struct add_i_state *s,
 		       const char *section_and_slot, char *dst,
@@ -530,8 +537,8 @@ static int get_modified_files(struct repository *r,
 	struct collection_status s = { 0 };
 	int i;
 
-	if (discard_index(r->index) < 0 ||
-	    repo_read_index_preload(r, ps, 0) < 0)
+	discard_index(r->index);
+	if (repo_read_index_preload(r, ps, 0) < 0)
 		return error(_("could not read index"));
 
 	prefix_item_list_clear(files);
@@ -551,7 +558,7 @@ static int get_modified_files(struct repository *r,
 		opt.def = is_initial ?
 			empty_tree_oid_hex() : oid_to_hex(&head_oid);
 
-		init_revisions(&rev, NULL);
+		repo_init_revisions(r, &rev, NULL);
 		setup_revisions(0, NULL, &rev, &opt);
 
 		rev.diffopt.output_format = DIFF_FORMAT_CALLBACK;
@@ -562,7 +569,7 @@ static int get_modified_files(struct repository *r,
 			copy_pathspec(&rev.prune_data, ps);
 
 		if (s.mode == FROM_INDEX)
-			run_diff_index(&rev, 1);
+			run_diff_index(&rev, DIFF_INDEX_CACHED);
 		else {
 			rev.diffopt.flags.ignore_dirty_submodules = 1;
 			run_diff_files(&rev, 0);
@@ -724,7 +731,7 @@ static int run_update(struct add_i_state *s, const struct pathspec *ps,
 }
 
 static void revert_from_diff(struct diff_queue_struct *q,
-			     struct diff_options *opt, void *data)
+			     struct diff_options *opt, void *data UNUSED)
 {
 	int i, add_flags = ADD_CACHE_OK_TO_ADD | ADD_CACHE_OK_TO_REPLACE;
 
@@ -997,27 +1004,26 @@ static int run_diff(struct add_i_state *s, const struct pathspec *ps,
 	count = list_and_choose(s, files, opts);
 	opts->flags = 0;
 	if (count > 0) {
-		struct strvec args = STRVEC_INIT;
+		struct child_process cmd = CHILD_PROCESS_INIT;
 
-		strvec_pushl(&args, "git", "diff", "-p", "--cached",
+		strvec_pushl(&cmd.args, "git", "diff", "-p", "--cached",
 			     oid_to_hex(!is_initial ? &oid :
 					s->r->hash_algo->empty_tree),
 			     "--", NULL);
 		for (i = 0; i < files->items.nr; i++)
 			if (files->selected[i])
-				strvec_push(&args,
+				strvec_push(&cmd.args,
 					    files->items.items[i].string);
-		res = run_command_v_opt(args.v, 0);
-		strvec_clear(&args);
+		res = run_command(&cmd);
 	}
 
 	putchar('\n');
 	return res;
 }
 
-static int run_help(struct add_i_state *s, const struct pathspec *unused_ps,
-		    struct prefix_item_list *unused_files,
-		    struct list_and_choose_options *unused_opts)
+static int run_help(struct add_i_state *s, const struct pathspec *ps UNUSED,
+		    struct prefix_item_list *files UNUSED,
+		    struct list_and_choose_options *opts UNUSED)
 {
 	color_fprintf_ln(stdout, s->help_color, "status        - %s",
 			 _("show paths with changes"));
@@ -1068,7 +1074,7 @@ struct print_command_item_data {
 	const char *color, *reset;
 };
 
-static void print_command_item(int i, int selected,
+static void print_command_item(int i, int selected UNUSED,
 			       struct string_list_item *item,
 			       void *print_command_item_data)
 {
@@ -1157,8 +1163,8 @@ int run_add_i(struct repository *r, const struct pathspec *ps)
 		    _("staged"), _("unstaged"), _("path"));
 	opts.list_opts.header = header.buf;
 
-	if (discard_index(r->index) < 0 ||
-	    repo_read_index(r) < 0 ||
+	discard_index(r->index);
+	if (repo_read_index(r) < 0 ||
 	    repo_refresh_and_write_index(r, REFRESH_QUIET, 0, 1,
 					 NULL, NULL, NULL) < 0)
 		warning(_("could not refresh index"));

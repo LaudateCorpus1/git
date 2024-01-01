@@ -405,40 +405,40 @@ test_expect_success '__gitdir - remote as argument' '
 
 test_expect_success '__git_dequote - plain unquoted word' '
 	__git_dequote unquoted-word &&
-	verbose test unquoted-word = "$dequoted_word"
+	test unquoted-word = "$dequoted_word"
 '
 
 # input:    b\a\c\k\'\\\"s\l\a\s\h\es
 # expected: back'\"slashes
 test_expect_success '__git_dequote - backslash escaped' '
 	__git_dequote "b\a\c\k\\'\''\\\\\\\"s\l\a\s\h\es" &&
-	verbose test "back'\''\\\"slashes" = "$dequoted_word"
+	test "back'\''\\\"slashes" = "$dequoted_word"
 '
 
 # input:    sin'gle\' '"quo'ted
 # expected: single\ "quoted
 test_expect_success '__git_dequote - single quoted' '
 	__git_dequote "'"sin'gle\\\\' '\\\"quo'ted"'" &&
-	verbose test '\''single\ "quoted'\'' = "$dequoted_word"
+	test '\''single\ "quoted'\'' = "$dequoted_word"
 '
 
 # input:    dou"ble\\" "\"\quot"ed
 # expected: double\ "\quoted
 test_expect_success '__git_dequote - double quoted' '
 	__git_dequote '\''dou"ble\\" "\"\quot"ed'\'' &&
-	verbose test '\''double\ "\quoted'\'' = "$dequoted_word"
+	test '\''double\ "\quoted'\'' = "$dequoted_word"
 '
 
 # input: 'open single quote
 test_expect_success '__git_dequote - open single quote' '
 	__git_dequote "'\''open single quote" &&
-	verbose test "open single quote" = "$dequoted_word"
+	test "open single quote" = "$dequoted_word"
 '
 
 # input: "open double quote
 test_expect_success '__git_dequote - open double quote' '
 	__git_dequote "\"open double quote" &&
-	verbose test "open double quote" = "$dequoted_word"
+	test "open double quote" = "$dequoted_word"
 '
 
 
@@ -616,7 +616,7 @@ test_expect_success '__git_is_configured_remote' '
 	test_when_finished "git remote remove remote_2" &&
 	git remote add remote_2 git://remote_2 &&
 	(
-		verbose __git_is_configured_remote remote_2 &&
+		__git_is_configured_remote remote_2 &&
 		test_must_fail __git_is_configured_remote non-existent
 	)
 '
@@ -1571,7 +1571,7 @@ test_expect_success FUNNYNAMES,!CYGWIN 'cone mode sparse-checkout completes dire
 	)
 '
 
-test_expect_success 'non-cone mode sparse-checkout uses bash completion' '
+test_expect_success 'non-cone mode sparse-checkout gives rooted paths' '
 	# reset sparse-checkout repo to non-cone mode
 	git -C sparse-checkout sparse-checkout disable &&
 	git -C sparse-checkout sparse-checkout set --no-cone &&
@@ -1581,7 +1581,12 @@ test_expect_success 'non-cone mode sparse-checkout uses bash completion' '
 		# expected to be empty since we have not configured
 		# custom completion for non-cone mode
 		test_completion "git sparse-checkout set f" <<-\EOF
-
+		/folder1/0/1/t.txt Z
+		/folder1/expected Z
+		/folder1/out Z
+		/folder1/out_sorted Z
+		/folder2/0/t.txt Z
+		/folder3/t.txt Z
 		EOF
 	)
 '
@@ -1622,14 +1627,22 @@ test_expect_success 'git checkout - with -d, complete only references' '
 '
 
 test_expect_success 'git switch - with --track, complete only remote branches' '
-	test_completion "git switch --track " <<-\EOF
+	test_completion "git switch --track " <<-\EOF &&
+	other/branch-in-other Z
+	other/main-in-other Z
+	EOF
+	test_completion "git switch -t " <<-\EOF
 	other/branch-in-other Z
 	other/main-in-other Z
 	EOF
 '
 
 test_expect_success 'git checkout - with --track, complete only remote branches' '
-	test_completion "git checkout --track " <<-\EOF
+	test_completion "git checkout --track " <<-\EOF &&
+	other/branch-in-other Z
+	other/main-in-other Z
+	EOF
+	test_completion "git checkout -t " <<-\EOF
 	other/branch-in-other Z
 	other/main-in-other Z
 	EOF
@@ -2255,6 +2268,36 @@ test_expect_success 'checkout completes ref names' '
 	EOF
 '
 
+test_expect_success 'checkout does not match ref names of a different case' '
+	test_completion "git checkout M" ""
+'
+
+test_expect_success 'checkout matches case insensitively with GIT_COMPLETION_IGNORE_CASE' '
+	(
+		GIT_COMPLETION_IGNORE_CASE=1 &&
+		test_completion "git checkout M" <<-\EOF
+		main Z
+		mybranch Z
+		mytag Z
+		EOF
+	)
+'
+
+test_expect_success 'checkout completes pseudo refs' '
+	test_completion "git checkout H" <<-\EOF
+	HEAD Z
+	EOF
+'
+
+test_expect_success 'checkout completes pseudo refs case insensitively with GIT_COMPLETION_IGNORE_CASE' '
+	(
+		GIT_COMPLETION_IGNORE_CASE=1 &&
+		test_completion "git checkout h" <<-\EOF
+		HEAD Z
+		EOF
+	)
+'
+
 test_expect_success 'git -C <path> checkout uses the right repo' '
 	test_completion "git -C subdir -C subsubdir -C .. -C ../otherrepo checkout b" <<-\EOF
 	branch-in-other Z
@@ -2426,6 +2469,24 @@ test_expect_success 'completion used <cmd> completion for alias: !f() { : git <c
 	EOF
 '
 
+test_expect_success 'completion used <cmd> completion for alias: !f() { : <cmd> ; ... }' '
+	test_config alias.co "!f() { : checkout ; if ... } f" &&
+	test_completion "git co m" <<-\EOF
+	main Z
+	mybranch Z
+	mytag Z
+	EOF
+'
+
+test_expect_success 'completion used <cmd> completion for alias: !f() { : <cmd>; ... }' '
+	test_config alias.co "!f() { : checkout; if ... } f" &&
+	test_completion "git co m" <<-\EOF
+	main Z
+	mybranch Z
+	mytag Z
+	EOF
+'
+
 test_expect_success 'completion without explicit _git_xxx function' '
 	test_completion "git version --" <<-\EOF
 	--build-options Z
@@ -2566,30 +2627,30 @@ test_expect_success 'options with value' '
 test_expect_success 'sourcing the completion script clears cached commands' '
 	(
 		__git_compute_all_commands &&
-		verbose test -n "$__git_all_commands" &&
+		test -n "$__git_all_commands" &&
 		. "$GIT_BUILD_DIR/contrib/completion/git-completion.bash" &&
-		verbose test -z "$__git_all_commands"
+		test -z "$__git_all_commands"
 	)
 '
 
 test_expect_success 'sourcing the completion script clears cached merge strategies' '
 	(
 		__git_compute_merge_strategies &&
-		verbose test -n "$__git_merge_strategies" &&
+		test -n "$__git_merge_strategies" &&
 		. "$GIT_BUILD_DIR/contrib/completion/git-completion.bash" &&
-		verbose test -z "$__git_merge_strategies"
+		test -z "$__git_merge_strategies"
 	)
 '
 
 test_expect_success 'sourcing the completion script clears cached --options' '
 	(
 		__gitcomp_builtin checkout &&
-		verbose test -n "$__gitcomp_builtin_checkout" &&
+		test -n "$__gitcomp_builtin_checkout" &&
 		__gitcomp_builtin notes_edit &&
-		verbose test -n "$__gitcomp_builtin_notes_edit" &&
+		test -n "$__gitcomp_builtin_notes_edit" &&
 		. "$GIT_BUILD_DIR/contrib/completion/git-completion.bash" &&
-		verbose test -z "$__gitcomp_builtin_checkout" &&
-		verbose test -z "$__gitcomp_builtin_notes_edit"
+		test -z "$__gitcomp_builtin_checkout" &&
+		test -z "$__gitcomp_builtin_notes_edit"
 	)
 '
 

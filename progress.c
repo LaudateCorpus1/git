@@ -9,13 +9,15 @@
  */
 
 #define GIT_TEST_PROGRESS_ONLY
-#include "cache.h"
-#include "gettext.h"
+#include "git-compat-util.h"
+#include "pager.h"
 #include "progress.h"
+#include "repository.h"
 #include "strbuf.h"
 #include "trace.h"
+#include "trace2.h"
 #include "utf8.h"
-#include "config.h"
+#include "parse.h"
 
 #define TP_IDX_MAX      8
 
@@ -59,7 +61,7 @@ void progress_test_force_update(void)
 }
 
 
-static void progress_interval(int signum)
+static void progress_interval(int signum UNUSED)
 {
 	progress_update = 1;
 }

@@ -1,5 +1,6 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "config.h"
+#include "repository.h"
 #include "run-command.h"
 #include "quote.h"
 #include "version.h"
@@ -10,6 +11,7 @@
 #include "trace2/tr2_tbuf.h"
 #include "trace2/tr2_tgt.h"
 #include "trace2/tr2_tls.h"
+#include "trace2/tr2_tmr.h"
 
 static struct tr2_dst tr2dst_perf = {
 	.sysenv_var = TR2_SYSENV_PERF,
@@ -108,7 +110,7 @@ static void perf_fmt_prepare(const char *event_name,
 
 	strbuf_addf(buf, "d%d | ", tr2_sid_depth());
 	strbuf_addf(buf, "%-*s | %-*s | ", TR2_MAX_THREAD_NAME,
-		    ctx->thread_name.buf, TR2FMT_PERF_MAX_EVENT_NAME,
+		    ctx->thread_name, TR2FMT_PERF_MAX_EVENT_NAME,
 		    event_name);
 
 	len = buf->len + TR2FMT_PERF_REPO_WIDTH;
@@ -437,12 +439,12 @@ static void fn_exec_result_fl(const char *file, int line,
 }
 
 static void fn_param_fl(const char *file, int line, const char *param,
-			const char *value)
+			const char *value, const struct key_value_info *kvi)
 {
 	const char *event_name = "def_param";
 	struct strbuf buf_payload = STRBUF_INIT;
 	struct strbuf scope_payload = STRBUF_INIT;
-	enum config_scope scope = current_config_scope();
+	enum config_scope scope = kvi->scope;
 	const char *scope_name = config_scope_name(scope);
 
 	strbuf_addf(&buf_payload, "%s:%s", param, value);
@@ -555,6 +557,44 @@ static void fn_printf_va_fl(const char *file, int line,
 	strbuf_release(&buf_payload);
 }
 
+static void fn_timer(const struct tr2_timer_metadata *meta,
+		     const struct tr2_timer *timer,
+		     int is_final_data)
+{
+	const char *event_name = is_final_data ? "timer" : "th_timer";
+	struct strbuf buf_payload = STRBUF_INIT;
+	double t_total = NS_TO_SEC(timer->total_ns);
+	double t_min = NS_TO_SEC(timer->min_ns);
+	double t_max = NS_TO_SEC(timer->max_ns);
+
+	strbuf_addf(&buf_payload, ("name:%s"
+				   " intervals:%"PRIu64
+				   " total:%8.6f min:%8.6f max:%8.6f"),
+		    meta->name,
+		    timer->interval_count,
+		    t_total, t_min, t_max);
+
+	perf_io_write_fl(__FILE__, __LINE__, event_name, NULL, NULL, NULL,
+			 meta->category, &buf_payload);
+	strbuf_release(&buf_payload);
+}
+
+static void fn_counter(const struct tr2_counter_metadata *meta,
+		       const struct tr2_counter *counter,
+		       int is_final_data)
+{
+	const char *event_name = is_final_data ? "counter" : "th_counter";
+	struct strbuf buf_payload = STRBUF_INIT;
+
+	strbuf_addf(&buf_payload, "name:%s value:%"PRIu64,
+		    meta->name,
+		    counter->value);
+
+	perf_io_write_fl(__FILE__, __LINE__, event_name, NULL, NULL, NULL,
+			 meta->category, &buf_payload);
+	strbuf_release(&buf_payload);
+}
+
 struct tr2_tgt tr2_tgt_perf = {
 	.pdst = &tr2dst_perf,
 
@@ -586,4 +626,6 @@ struct tr2_tgt tr2_tgt_perf = {
 	.pfn_data_fl = fn_data_fl,
 	.pfn_data_json_fl = fn_data_json_fl,
 	.pfn_printf_va_fl = fn_printf_va_fl,
+	.pfn_timer = fn_timer,
+	.pfn_counter = fn_counter,
 };

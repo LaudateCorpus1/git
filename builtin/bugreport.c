@@ -1,4 +1,7 @@
 #include "builtin.h"
+#include "abspath.h"
+#include "editor.h"
+#include "gettext.h"
 #include "parse-options.h"
 #include "strbuf.h"
 #include "help.h"
@@ -6,7 +9,8 @@
 #include "hook.h"
 #include "hook-list.h"
 #include "diagnose.h"
-
+#include "object-file.h"
+#include "setup.h"
 
 static void get_system_info(struct strbuf *sys_info)
 {
@@ -60,7 +64,8 @@ static void get_populated_hooks(struct strbuf *hook_info, int nongit)
 }
 
 static const char * const bugreport_usage[] = {
-	N_("git bugreport [-o|--output-directory <file>] [-s|--suffix <format>] [--diagnose[=<mode>]"),
+	N_("git bugreport [(-o | --output-directory) <path>] [(-s | --suffix) <format>]\n"
+	   "              [--diagnose[=<mode>]]"),
 	NULL
 };
 
@@ -105,6 +110,7 @@ int cmd_bugreport(int argc, const char **argv, const char *prefix)
 	const char *user_relative_path = NULL;
 	char *prefixed_filename;
 	size_t output_path_len;
+	int ret;
 
 	const struct option bugreport_options[] = {
 		OPT_CALLBACK_F(0, "diagnose", &diagnose, N_("mode"),
@@ -119,6 +125,11 @@ int cmd_bugreport(int argc, const char **argv, const char *prefix)
 
 	argc = parse_options(argc, argv, prefix, bugreport_options,
 			     bugreport_usage, 0);
+
+	if (argc) {
+		error(_("unknown argument `%s'"), argv[0]);
+		usage(bugreport_usage[0]);
+	}
 
 	/* Prepare the path to put the result */
 	prefixed_filename = prefix_filename(prefix,
@@ -181,7 +192,9 @@ int cmd_bugreport(int argc, const char **argv, const char *prefix)
 		user_relative_path);
 
 	free(prefixed_filename);
-	UNLEAK(buffer);
-	UNLEAK(report_path);
-	return !!launch_editor(report_path.buf, NULL, NULL);
+	strbuf_release(&buffer);
+
+	ret = !!launch_editor(report_path.buf, NULL, NULL);
+	strbuf_release(&report_path);
+	return ret;
 }
