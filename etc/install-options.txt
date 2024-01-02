@@ -1,0 +1,15 @@
+Editor Option: VisualStudioCodeInsiders
+Custom Editor Path: 
+Default Branch Option:  
+Path Option: CmdTools
+SSH Option: OpenSSH
+Tortoise Option: false
+CURL Option: OpenSSL
+CRLF Option: CRLFCommitAsIs
+Bash Terminal Option: MinTTY
+Git Pull Behavior Option: Merge
+Use Credential Manager: Enabled
+Performance Tweaks FSCache: Enabled
+Enable Symlinks: Enabled
+Enable Pseudo Console Support: Enabled
+Enable FSMonitor: Enabled
